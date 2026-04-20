@@ -257,6 +257,12 @@ export interface InstallOptions {
    * `noPlugin` (the CLI gives `noPlugin` precedence).
    */
   pluginDirMode?: boolean;
+  /**
+   * Target directory for skill installation.
+   * - 'project' (default): install to `./.claude/skills` (project-level)
+   * - 'omc': install to `~/.claude/skills` (user-level OMC)
+   */
+  skillsTargetDir?: 'omc' | 'project';
 }
 
 /**
@@ -1134,13 +1140,17 @@ function isOmcManagedSkillDir(skillDir: string): boolean {
   return existsSync(getManagedSkillMarkerPath(skillDir));
 }
 
-function syncBundledSkillDefinitions(log: (msg: string) => void, options?: { safeStandaloneNames?: boolean }): string[] {
+function syncBundledSkillDefinitions(log: (msg: string) => void, options?: { safeStandaloneNames?: boolean; targetDir?: string }): string[] {
   const skillsDir = join(getPackageDir(), 'skills');
   const installedSkills: string[] = [];
 
   if (!existsSync(skillsDir)) {
     return installedSkills;
   }
+
+  // Default to user-level SKILLS_DIR when not specified (backward compat for direct API callers)
+  // CLI passes explicit targetDir to override this to project-level via skillsTargetDir option
+  const targetBaseDir = options?.targetDir ?? SKILLS_DIR;
 
   const seenTargetDirs = new Set<string>();
 
@@ -1169,7 +1179,7 @@ function syncBundledSkillDefinitions(log: (msg: string) => void, options?: { saf
     seenTargetDirs.add(dedupeKey);
 
     const relativePath = join(targetDirName, 'SKILL.md');
-    const targetDir = join(SKILLS_DIR, targetDirName);
+    const targetDir = join(targetBaseDir, targetDirName);
     cpSync(sourceDir, targetDir, { recursive: true, force: true });
     markSkillAsOmcManaged(targetDir);
     installedSkills.push(relativePath.replace(/\\/g, '/'));
@@ -1533,9 +1543,27 @@ export function install(options: InstallOptions = {}): InstallResult {
         : !enabledOmcPlugin
           ? 'Installing bundled skills from local package (no enabled OMC plugin detected)...'
           : 'Installing bundled skills from local package (enabled plugin skill files not found)...');
-      result.installedSkills.push(...syncBundledSkillDefinitions(log, {
-        safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true,
-      }));
+      // Determine target dir(s): project-level (./.claude/skills) and/or user-level (~/.claude/skills)
+      // CLI passes explicit targetDir to override; when not specified, let syncBundledSkillDefinitions
+      // use its own default (SKILLS_DIR) to preserve backward compat for direct API callers
+      // --omc flag means: install to project-level AND user-level
+      const projectTargetDir = join(process.cwd(), '.claude', 'skills');
+      const installProject = options.skillsTargetDir == null || options.skillsTargetDir === 'project';
+      const installUser = options.skillsTargetDir === 'omc';
+
+      if (installProject) {
+        const targetDir = options.skillsTargetDir != null ? projectTargetDir : undefined;
+        result.installedSkills.push(...syncBundledSkillDefinitions(log, {
+          safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true,
+          targetDir,
+        }));
+      }
+      if (installUser) {
+        result.installedSkills.push(...syncBundledSkillDefinitions(log, {
+          safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true,
+          targetDir: SKILLS_DIR,
+        }));
+      }
     } else if (pluginProvidesSkillFiles) {
       log('Skipping bundled skill installation (plugin-provided skills are available). Use --no-plugin to force local skill sync.');
       // Remove standalone copies that duplicate plugin-provided skills (#2252)

@@ -1,6 +1,6 @@
 {
   "name": "oh-my-claude-sisyphus",
-  "version": "4.11.6",
+  "version": "4.11.7",
   "description": "Multi-agent orchestration system for Claude Code - Inspired by oh-my-opencode",
   "type": "module",
   "main": "dist/index.js",
@@ -87,6 +87,7 @@
     "@types/node": "^22.19.7",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
+    "@vitest/coverage-v8": "^4.1.4",
     "@vitest/ui": "^4.0.17",
     "concurrently": "^9.2.1",
     "esbuild": "^0.27.2",

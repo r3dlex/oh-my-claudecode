@@ -1,3 +1,32 @@
+# oh-my-claudecode v4.11.7: coverage improvements and test additions
+
+## Release Notes
+
+Release with **0 new features**, **0 bug fixes**, **5 other changes** across **0 merged PRs** (maintenance / coverage release).
+
+### Highlights
+
+- **chore(coverage): improve statement, function, and branch coverage by ~10 percentage points each**
+- **chore(tests): add 4 new test files covering magic-keywords, lsp/utils, context-injector/injector, boulder-state/storage, and cli/utils/formatting**
+
+### Bug Fixes
+
+- (maintenance / coverage release)
+
+### Other Changes
+
+- **Add statement/function/branch coverage tests for magic-keywords module**
+- **Add statement/function/branch coverage tests for lsp/utils module**
+- **Add statement/function/branch coverage tests for context-injector/injector module**
+- **Add statement/function/branch coverage tests for boulder-state/storage module**
+- **Add statement/function/branch coverage tests for cli/utils/formatting module**
+
+### Stats
+
+- **0 PRs merged** | **0 new features** | **0 bug fixes** | **5 other changes**
+
+---
+
 # oh-my-claudecode v4.11.6: add MiniMax coding, display extra usage, split usage cache
 
 ## Release Notes
