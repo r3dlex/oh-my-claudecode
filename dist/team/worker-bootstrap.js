@@ -10,11 +10,12 @@ export function generateTriggerMessage(teamName, workerName, teamStateRoot = '.o
     if (teamStateRoot !== '.omc/state') {
         return `Read ${inboxPath}, work now, report progress.`;
     }
-    return `Read ${inboxPath}, start work now, report concrete progress (not ACK-only), and keep executing your assigned or next feasible work.`;
+    return `Read ${inboxPath}, execute now, report concrete progress.`;
 }
-export function generatePromptModeStartupPrompt(teamName, workerName, teamStateRoot = '.omc/state') {
+export function generatePromptModeStartupPrompt(teamName, workerName, teamStateRoot = '.omc/state', cliOutputContract) {
     const inboxPath = buildInstructionPath(teamStateRoot, 'team', teamName, 'workers', workerName, 'inbox.md');
-    return `Open ${inboxPath}. Follow it and begin the assigned work.`;
+    const base = `Open ${inboxPath}. Follow it and begin the assigned work.`;
+    return cliOutputContract ? `${base}\n${cliOutputContract}` : base;
 }
 export function generateMailboxTriggerMessage(teamName, workerName, count = 1, teamStateRoot = '.omc/state') {
     const normalizedCount = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1;
@@ -22,7 +23,7 @@ export function generateMailboxTriggerMessage(teamName, workerName, count = 1, t
     if (teamStateRoot !== '.omc/state') {
         return `${normalizedCount} new msg(s): check ${mailboxPath}, act and report progress.`;
     }
-    return `You have ${normalizedCount} new message(s). Check ${mailboxPath}, act now, reply with concrete progress (not ACK-only), and keep executing your assigned or next feasible work.`;
+    return `${normalizedCount} new msg(s). Read ${mailboxPath}, act now, report concrete progress.`;
 }
 function agentTypeGuidance(agentType) {
     const teamApiCommand = formatOmcCliInvocation('team api');
@@ -42,6 +43,13 @@ function agentTypeGuidance(agentType) {
                 '- Execute task work in small, verifiable increments and report each milestone to leader-fixed.',
                 '- Keep commit-sized changes scoped to assigned files only; no broad refactors.',
                 `- CRITICAL: You MUST run \`${claimTaskCommand}\` before starting work and \`${transitionTaskStatusCommand}\` when done. Do not exit without transitioning the task status.`,
+            ].join('\n');
+        case 'cursor':
+            return [
+                '### Agent-Type Guidance (cursor)',
+                '- You are an interactive REPL (cursor-agent), not a one-shot CLI. Stay in the session; the leader will continue to send prompts via mailbox.',
+                `- You MUST run \`${claimTaskCommand}\` before starting work and \`${transitionTaskStatusCommand}\` when done. Then keep waiting for the next mailbox message; do NOT type \`/exit\` unless the leader sends an explicit shutdown.`,
+                '- Reviewer/critic/security-review roles are NOT supported for cursor workers — those require a verdict-file write-and-exit which the REPL does not perform. Take only executor-style tasks.',
             ].join('\n');
         case 'claude':
         default:
@@ -177,10 +185,13 @@ ${bootstrapInstructions ? `## Role Context\n${bootstrapInstructions}\n` : ''}`;
 /**
  * Write the initial inbox file for a worker.
  */
-export async function composeInitialInbox(teamName, workerName, content, cwd) {
+export async function composeInitialInbox(teamName, workerName, content, cwd, cliOutputContract) {
     const inboxPath = join(cwd, `.omc/state/team/${teamName}/workers/${workerName}/inbox.md`);
     await mkdir(dirname(inboxPath), { recursive: true });
-    await writeFile(inboxPath, content, 'utf-8');
+    const finalContent = cliOutputContract && !content.includes(cliOutputContract)
+        ? `${content}\n${cliOutputContract}`
+        : content;
+    await writeFile(inboxPath, finalContent, 'utf-8');
 }
 /**
  * Append a message to the worker inbox.

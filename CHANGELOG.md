@@ -1,132 +1,53 @@
-# oh-my-claudecode v4.11.8: branch coverage to 80%+ with additional test suites
+# oh-my-claudecode v4.13.1: Cursor Support & Bug Fixes
 
 ## Release Notes
 
-Release with **0 new features**, **0 bug fixes**, **6 other changes** across **0 merged PRs** (maintenance / coverage release).
+Release with **1 new feature**, **2 bug fixes** across **3 merged PRs**.
 
 ### Highlights
 
-- **chore(tests): achieve 80%+ branch coverage with 6 new test suites and targeted expansions**
-
-### Other Changes
-
-- **Add branch-coverage tests for ContextCollector (hasPending, getEntryCount, removeEntry, getActiveSessions, priority sorting, consume)**
-- **Add branch-coverage tests for skill-pipeline (parseSkillPipelineMetadata, renderSkillPipelineGuidance)**
-- **Add branch-coverage tests for frontmatter utilities (parseFrontmatterList, parseFrontmatterAliases edge cases)**
-- **Expand learner/parser tests: quality:0, usageCount:0, single-string triggers/tags, blank-line arrays, generateSkillFrontmatter**
-- **Expand openclaw/signal tests: session-end/stop/ask-user-question, PR phases, exit-code prefix branches, Edit/Write tool detection**
-- **Expand openclaw/dedupe tests: malformed JSON resilience, pruneState TTL, descriptor edge cases**
-
-### Stats
-
-- **0 PRs merged** | **0 new features** | **0 bug fixes** | **6 other changes**
-- **Coverage**: Statements 87.47% | Branches 80.00% | Functions 91.51% | Lines 88.30%
-
----
-
-# oh-my-claudecode v4.11.7: coverage improvements and test additions
-
-## Release Notes
-
-Release with **0 new features**, **0 bug fixes**, **5 other changes** across **0 merged PRs** (maintenance / coverage release).
-
-### Highlights
-
-- **chore(coverage): improve statement, function, and branch coverage by ~10 percentage points each**
-- **chore(tests): add 4 new test files covering magic-keywords, lsp/utils, context-injector/injector, boulder-state/storage, and cli/utils/formatting**
-
-### Bug Fixes
-
-- (maintenance / coverage release)
-
-### Other Changes
-
-- **Add statement/function/branch coverage tests for magic-keywords module**
-- **Add statement/function/branch coverage tests for lsp/utils module**
-- **Add statement/function/branch coverage tests for context-injector/injector module**
-- **Add statement/function/branch coverage tests for boulder-state/storage module**
-- **Add statement/function/branch coverage tests for cli/utils/formatting module**
-
-### Stats
-
-- **0 PRs merged** | **0 new features** | **0 bug fixes** | **5 other changes**
-
----
-
-# oh-my-claudecode v4.11.6: add MiniMax coding, display extra usage, split usage cache
-
-## Release Notes
-
-Release with **4 new features**, **30 bug fixes**, **14 other changes** across **50 merged PRs**.
-
-### Highlights
-
-- **feat(hud): add MiniMax coding plan usage provider** (#2568)
-- **feat(hud): display extra usage spend data in HUD** (#2571)
-- **feat(hud): split usage cache by provider to eliminate cross-session thrashing** (#2556)
-- **feat(release): rewrite release skill as generic repo-aware assistant** (#2501)
+- **feat(team): Add cursor-agent as 4th tmux worker type** (#2736) - Cursor agent support in `omc-teams` CLI execution
+- **fix(keyword-detector): Stop false-positive autopilot on "autonomous"** (#2739) - "autonomous" no longer triggers autopilot mode
+- **fix(self-improve): Scope artifacts by topic for safer resumes** (#2732) - Topic-scoped artifact directories prevent cross-contamination
 
 ### New Features
 
-- **feat(hud): add MiniMax coding plan usage provider** (#2568)
-- **feat(hud): display extra usage spend data in HUD** (#2571)
-- **feat(hud): split usage cache by provider to eliminate cross-session thrashing** (#2556)
-- **feat(release): rewrite release skill as generic repo-aware assistant** (#2501)
+- **feat(team): Add cursor-agent as 4th tmux worker type (executor-only)** (#2736)
+  - Cursor IDE agent support alongside Claude, Codex, and Gemini workers
+  - Runtime-guidance test compatibility preserved
 
 ### Bug Fixes
 
-- **fix: suppress optional OMX startup MCP method-not-found pane noise** (#2592)
-- **fix(tmux): suppress stale pane alert replays after session death** (#2590)
-- **fix(hooks): wrap wiki hook additionalContext in hookSpecificOutput** (#2588)
-- **fix(installer): preserve concurrent settings updates during install** (#2586)
-- **fix(hooks): prevent duplicate hook firing when plugin and standalone coexist** (#2579)
-- **fix(openclaw): suppress dead-session pane replay alerts** (#2563)
-- **fix(tmux-detector): suppress stale pane history and commit/UI text false-positives** (#2574)
-- **fix(installer): preserve user skills with OMC-style frontmatter during updates** (#2575)
-- **fix(permission-handler): allow read-only gh issue/pr commands; add installer lib assertions** (#2576)
-- **fix(context-bloat): eliminate three sources of repeated rule/skill injection** (#2578)
-- **fix(ask): close stdin for provider spawns to prevent hang in piped environments** (#2564)
-- **fix(post-tool-verifier): suppress non-actionable error token noise** (#2559)
-- **fix(openclaw): suppress late lifecycle alerts for completed/cleaned-up sessions** (#2554)
-- **fix(keyword-detector): suppress review-seed echo from tripping code-review alerts** (#2550)
-- **fix(purge): symlink stale plugin version dirs to prevent post-upgrade hook failures** (#2549)
-- **fix(deep-interview): replace five remaining hardcoded 20%/0.2 threshold signals (issue #2545)** (#2547)
-- **fix(stop-hook): cap echoed task prompt to 150 chars** (#2544)
-- **fix(mcp): wire wiki, shared_memory, skills, and deepinit tools into standalone server** (#2537)
-- **fix(openclaw): suppress stale tmux pane history in stop/session-end alerts** (#2535)
-- **fix(state-root): centralize OMC_STATE_DIR resolution across hook entrypoints** (#2533)
-- **fix: restrict setup stale-skill cleanup to OMC-managed dirs** (#2528)
-- **fix: reduce post-tool bash failure false positives** (#2526)
-- **fix: pipe multiline ask advisor prompts via stdin** (#2524)
-- **fix(config): warn on deprecated delegation routing** (#2522)
-- **fix(notifications): suppress usage-text tmux alert noise** (#2515)
-- **fix(psm): launch trusted sessions with initial prompt** (#2512)
-- **fix(openclaw): dedupe multi-pane native lifecycle bursts** (#2494)
-- **fix(tmux): keep HUD pane cleanup on the current tmux server** (#2492)
-- **fix(autopilot): scope runtime insight to the active session** (#2491)
-- **fix(team): scaleUp() should honor agentType launch contracts** (#2489)
-
-### Documentation
-
-- **docs: add omc symlink bootstrap and .mcp.json conflict resolution** (#2493)
-
-### Other Changes
-
-- **Make Ralph enforce real PRD and story review gates** (#2604)
-- **Keep PR review verification focused by default** (#2600)
-- **Reduce false-severe PR review noise in clean worktrees** (#2598)
-- **Guard shipped permission-handler parity at the runtime entrypoint** (#2596)
-- **Reduce approval stalls for safe repo inspection and single-test runs** (#2594)
-- **Harden live tmux keyword alerts against prompt/search noise** (#2585)
-- **Harden tmux keyword alerting against review/payload noise** (#2582)
-- **Fix stop-hook timeout enforcement for issue #2565** (#2569)
-- **Fix persistent-mode.cjs OMC_STATE_DIR state resolution mismatch** (#2531)
-- **Suppress stale repo-level CI replay noise after zero backlog** (#2530)
-- **Fix issue #2506: keep review/fix tmux sessions on their requested task context** (#2507)
-- **Fix issue #2504: suppress tmux keyword-alert false positives from PR review seed prompts** (#2505)
-- **Fix tmux keyword-alert noise from prompt-mode startup echo** (#2502)
-- **Back off zero-backlog follow-up spam on unchanged repo state** (#2498)
+- **fix(keyword-detector): Stop false-positive autopilot on "autonomous"** (#2739)
+- **fix(self-improve): Scope self-improve artifacts by topic for safer resumes** (#2732)
 
 ### Stats
 
-- **50 PRs merged** | **4 new features** | **30 bug fixes** | **0 security/hardening improvements** | **14 other changes**
+- **3 PRs merged** | **1 new feature** | **2 bug fixes** | **0 security/hardening improvements** | **0 other changes**
+
+---
+
+# oh-my-claudecode v4.13.0: Bug Fixes
+
+## Release Notes
+
+Release with **2 bug fixes**, **2 other changes** across **4 merged PRs**.
+
+### Highlights
+
+- **fix(installer): Copy hooks lib modules during update** (#2728)
+- **fix(hooks, windows): pass shell:true to plugin-patterns npm/npx spawns** (#2722)
+
+### Bug Fixes
+
+- **fix(installer): Copy hooks lib modules during update** (#2728)
+- **fix(hooks, windows): pass shell:true to plugin-patterns npm/npx spawns** (#2722)
+
+### Other Changes
+
+- **Reland: autoresearch-as-a-skill migration (fixes conflicts vs #2716)** (#2727)
+- **Fix deep-interview threshold on native skill path** (#2724)
+
+### Stats
+
+- **4 PRs merged** | **0 new features** | **2 bug fixes** | **0 security/hardening improvements** | **2 other changes**

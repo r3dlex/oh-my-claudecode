@@ -12,6 +12,7 @@ import { execSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getClaudeConfigDir } from './lib/config-dir.mjs';
 import { evaluateAgentHeavyPreflight } from './lib/pre-tool-enforcer-preflight.mjs';
+import { resolveOmcStateRoot } from './lib/state-root.mjs';
 import { readStdin } from './lib/stdin.mjs';
 
 // Inlined from src/config/models.ts — avoids a dist/ import so the hook works
@@ -31,6 +32,34 @@ function isSubagentSafeModelId(modelId) {
 const TIER_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
 function isTierAlias(modelId) {
   return TIER_ALIASES.has((modelId || '').toLowerCase());
+}
+// Resolution chain for tier alias → subagent-safe model ID.
+// Order mirrors src/config/models.ts:TIER_ENV_KEYS with OMC_SUBAGENT_MODEL as top-priority override.
+// OMC_SUBAGENT_MODEL at position 0 wins for ALL tiers — tier-specific vars are only
+// reached when it is unset or fails isSubagentSafeModelId validation.
+// OMC_MODEL_* is intentionally excluded: those are OMC-internal vars that the OMC bridge
+// reads for its own routing, but CC itself does not read them when resolving tier aliases
+// (sonnet/haiku/opus). Allowing OMC_MODEL_* as proof would let the hook pass while CC
+// still fails to route the alias, reintroducing the downstream deadlock this gate prevents.
+const TIER_TO_DEFAULT_ENV_KEYS = {
+  haiku:  ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_HAIKU_MODEL',  'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
+  sonnet: ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_SONNET_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
+  opus:   ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_OPUS_MODEL',   'ANTHROPIC_DEFAULT_OPUS_MODEL'],
+};
+function resolveTierAliasToSafeModel(tierAlias) {
+  const keys = TIER_TO_DEFAULT_ENV_KEYS[(tierAlias || '').toLowerCase()];
+  if (!keys) return '';
+  for (const key of keys) {
+    const value = (process.env[key] || '').trim();
+    // CC-native vars (ANTHROPIC_DEFAULT_* and CLAUDE_CODE_BEDROCK_*) are read by CC's own
+    // model resolution, which handles [1m] suffixes correctly for explicit model= calls.
+    // OMC-internal vars (OMC_SUBAGENT_MODEL, OMC_MODEL_*) are not read by CC, so a [1m]
+    // value there is not a valid routing proof — keep the stricter isSubagentSafeModelId check.
+    const isNativeCcVar = key.startsWith('ANTHROPIC_DEFAULT_') || key.startsWith('CLAUDE_CODE_BEDROCK_');
+    const validator = isNativeCcVar ? isProviderSpecificModelId : isSubagentSafeModelId;
+    if (value && validator(value)) return value;
+  }
+  return '';
 }
 /** Map a bare Anthropic model ID to its CC tier alias (sonnet/opus/haiku), or null if unrecognised. */
 function normalizeToCcAlias(model) {
@@ -167,8 +196,8 @@ function extractJsonField(input, field, defaultValue = '') {
 }
 
 // Get agent tracking info from state file
-function getAgentTrackingInfo(directory) {
-  const trackingFile = join(directory, '.omc', 'state', 'subagent-tracking.json');
+function getAgentTrackingInfo(stateDir) {
+  const trackingFile = join(stateDir, 'subagent-tracking.json');
   try {
     if (existsSync(trackingFile)) {
       const data = JSON.parse(readFileSync(trackingFile, 'utf-8'));
@@ -252,9 +281,7 @@ function hasActiveSwarmMode(stateDir, { allowSessionTagged = false } = {}) {
   return true;
 }
 
-function hasActiveMode(directory, sessionId) {
-  const stateDir = join(directory, '.omc', 'state');
-
+function hasActiveMode(stateDir, sessionId) {
   if (isValidSessionId(sessionId)) {
     const sessionStateDir = join(stateDir, 'sessions', sessionId);
     return (
@@ -288,12 +315,12 @@ function mapCanonicalTeamPhaseToStage(rawPhase) {
   }
 }
 
-function readCanonicalActiveTeamState(directory, sessionId) {
+function readCanonicalActiveTeamState(stateDir, sessionId) {
   if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
     return null;
   }
 
-  const teamRoot = join(directory, '.omc', 'state', 'team');
+  const teamRoot = join(stateDir, 'team');
   if (!existsSync(teamRoot)) {
     return null;
   }
@@ -340,17 +367,17 @@ function readCanonicalActiveTeamState(directory, sessionId) {
  * Reads team-state.json from session-scoped or legacy paths and falls back
  * to canonical team state when the coarse file drifts or disappears.
  */
-function getActiveTeamState(directory, sessionId) {
+function getActiveTeamState(stateDir, sessionId) {
   const paths = [];
   let coarseState = null;
 
   // Session-scoped path (preferred)
   if (sessionId && SESSION_ID_PATTERN.test(sessionId)) {
-    paths.push(join(directory, '.omc', 'state', 'sessions', sessionId, 'team-state.json'));
+    paths.push(join(stateDir, 'sessions', sessionId, 'team-state.json'));
   }
 
   // Legacy path
-  paths.push(join(directory, '.omc', 'state', 'team-state.json'));
+  paths.push(join(stateDir, 'team-state.json'));
 
   for (const statePath of paths) {
     const state = readJsonFile(statePath);
@@ -366,7 +393,7 @@ function getActiveTeamState(directory, sessionId) {
     }
   }
 
-  const canonical = readCanonicalActiveTeamState(directory, sessionId);
+  const canonical = readCanonicalActiveTeamState(stateDir, sessionId);
   if (canonical && canonical.active === true) {
     return canonical;
   }
@@ -375,7 +402,7 @@ function getActiveTeamState(directory, sessionId) {
 }
 
 // Generate agent spawn message with metadata
-function generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId) {
+function generateAgentSpawnMessage(toolInput, stateDir, todoStatus, sessionId) {
   if (!toolInput || typeof toolInput !== 'object') {
     if (QUIET_LEVEL >= 2) return '';
     return `${todoStatus}Launch multiple agents in parallel when tasks are independent. Use run_in_background for long operations.`;
@@ -385,12 +412,12 @@ function generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId) 
   const model = toolInput.model || 'inherit';
   const desc = toolInput.description || '';
   const bg = toolInput.run_in_background ? ' [BACKGROUND]' : '';
-  const tracking = getAgentTrackingInfo(directory);
+  const tracking = getAgentTrackingInfo(stateDir);
 
   // Team-routing enforcement (issue #1006):
   // When team state is active and Task is called WITHOUT team_name,
   // inject a redirect message to use team agents instead of subagents.
-  const teamState = getActiveTeamState(directory, sessionId);
+  const teamState = getActiveTeamState(stateDir, sessionId);
   if (teamState && !toolInput.team_name) {
     const teamName = teamState.team_name || teamState.teamName || 'team';
     return `[TEAM ROUTING REQUIRED] Team "${teamName}" is active but you are spawning a regular subagent ` +
@@ -519,7 +546,7 @@ function extractSkillName(toolInput) {
   return normalized.includes(':') ? normalized.split(':').at(-1).toLowerCase() : normalized.toLowerCase();
 }
 
-function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
+function writeSkillActiveState(stateDir, skillName, sessionId, rawSkillName) {
   const protection = getSkillProtectionLevel(skillName, rawSkillName);
   if (protection === 'none') return;
 
@@ -527,7 +554,6 @@ function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
   const now = new Date().toISOString();
   const normalized = (skillName || '').toLowerCase().replace(/^oh-my-claudecode:/, '');
 
-  const stateDir = join(directory, '.omc', 'state');
   const safeSessionId = sessionId && SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
   const targetDir = safeSessionId
     ? join(stateDir, 'sessions', safeSessionId)
@@ -582,8 +608,7 @@ function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
 }
 
 
-function clearAwaitingConfirmationFlag(directory, stateName, sessionId) {
-  const stateDir = join(directory, '.omc', 'state');
+function clearAwaitingConfirmationFlag(stateDir, stateName, sessionId) {
   const safeSessionId = sessionId && SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
   const paths = [
     safeSessionId ? join(stateDir, 'sessions', safeSessionId, `${stateName}-state.json`) : null,
@@ -605,20 +630,20 @@ function clearAwaitingConfirmationFlag(directory, stateName, sessionId) {
   }
 }
 
-function confirmSkillModeStates(directory, skillName, sessionId) {
+function confirmSkillModeStates(stateDir, skillName, sessionId) {
   switch (skillName) {
     case 'ralph':
-      clearAwaitingConfirmationFlag(directory, 'ralph', sessionId);
-      clearAwaitingConfirmationFlag(directory, 'ultrawork', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ralph', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ultrawork', sessionId);
       break;
     case 'ultrawork':
-      clearAwaitingConfirmationFlag(directory, 'ultrawork', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ultrawork', sessionId);
       break;
     case 'autopilot':
-      clearAwaitingConfirmationFlag(directory, 'autopilot', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'autopilot', sessionId);
       break;
     case 'ralplan':
-      clearAwaitingConfirmationFlag(directory, 'ralplan', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ralplan', sessionId);
       break;
     default:
       break;
@@ -656,6 +681,12 @@ async function main() {
     const toolName = extractJsonField(input, 'tool_name') || extractJsonField(input, 'toolName', 'unknown');
     const directory = extractJsonField(input, 'cwd') || extractJsonField(input, 'directory', process.cwd());
 
+    // Resolve the .omc state root once, honoring OMC_STATE_DIR.
+    // All helpers receive stateDir so they stay in sync with the centralized
+    // resolver used by session-start.mjs and persistent-mode (issue #2518, PR #2532).
+    const omcRoot = await resolveOmcStateRoot(directory);
+    const stateDir = join(omcRoot, 'state');
+
     // Record Skill invocations to flow trace
     let data = {};
     try { data = JSON.parse(input); } catch {}
@@ -673,8 +704,8 @@ async function main() {
         // Pass rawSkillName to distinguish OMC skills from project custom skills (issue #1581)
         const rawSkill = toolInput.skill || toolInput.skill_name || toolInput.skillName || toolInput.command || '';
         const rawSkillName = typeof rawSkill === 'string' && rawSkill.trim() ? rawSkill.trim() : undefined;
-        writeSkillActiveState(directory, skillName, sid, rawSkillName);
-        confirmSkillModeStates(directory, skillName, sid);
+        writeSkillActiveState(stateDir, skillName, sid, rawSkillName);
+        confirmSkillModeStates(stateDir, skillName, sid);
       }
     }
 
@@ -684,7 +715,7 @@ async function main() {
         : typeof data.sessionId === 'string'
           ? data.sessionId
           : '';
-    const modeActive = hasActiveMode(directory, sessionId);
+    const modeActive = hasActiveMode(stateDir, sessionId);
 
     // Force-inherit check: deny Task/Agent calls with invalid model param when forceInherit is
     // enabled (Bedrock, Vertex, CC Switch, etc.) - issues #1135, #1201, #1767, #1868
@@ -712,18 +743,17 @@ async function main() {
             : claudeModel || anthropicModel;
 
         if (toolModel) {
-          // Allow tier aliases (sonnet/opus/haiku) when OMC_SUBAGENT_MODEL is a valid
-          // provider-specific ID. The Agent tool schema only accepts these short aliases —
-          // full Bedrock/Vertex IDs are rejected by the tool schema, so tier aliases + routing
-          // via OMC_SUBAGENT_MODEL is the only viable explicit-model escape hatch.
-          const subagentModelForAlias = process.env.OMC_SUBAGENT_MODEL || '';
-          if (isTierAlias(toolModel) && isSubagentSafeModelId(subagentModelForAlias)) {
-            // fall through to continue — tier alias is safe when OMC_SUBAGENT_MODEL is a valid provider-specific ID
+          // Allow tier aliases (sonnet/opus/haiku) when a subagent-safe model can be
+          // resolved for that tier. Resolution chain: OMC_SUBAGENT_MODEL (global override)
+          // → CLAUDE_CODE_BEDROCK_*_MODEL → ANTHROPIC_DEFAULT_*_MODEL.
+          if (isTierAlias(toolModel) && resolveTierAliasToSafeModel(toolModel)) {
+            // fall through to continue — tier alias resolves to a safe provider-specific ID
           } else if (!isSubagentSafeModelId(toolModel)) {
-            const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-            const guidance = subagentModel
-              ? `Pass model="${subagentModel}" (your configured OMC_SUBAGENT_MODEL value).`
-              : `Remove the \`model\` parameter, or set OMC_SUBAGENT_MODEL=<valid-bedrock-id> and pass that value explicitly.`;
+            const tierUpper = isTierAlias(toolModel) ? toolModel.toUpperCase() : '';
+            const derivedTier = tierUpper || (normalizeToCcAlias(toolModel) || '').toUpperCase();
+            const guidance = derivedTier
+              ? `Set ANTHROPIC_DEFAULT_${derivedTier}_MODEL=<valid-bedrock-id> in settings.json env, or set OMC_SUBAGENT_MODEL as a global override.`
+              : `Remove the \`model\` parameter, or set ANTHROPIC_DEFAULT_SONNET_MODEL=<valid-bedrock-id> in settings.json env.`;
             console.log(JSON.stringify({
               continue: true,
               hookSpecificOutput: {
@@ -741,10 +771,11 @@ async function main() {
           // Anthropic model ID (e.g. claude-sonnet-4-6) which is invalid on Bedrock.
           // Fix: pass a tier alias (sonnet/haiku/opus). The Agent tool schema only accepts
           // tier aliases for the model param — full Bedrock IDs are rejected by the schema.
-          // OMC_SUBAGENT_MODEL is used only for guidance; derive the tier alias from it.
-          const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-          const tierAlias = normalizeToCcAlias(subagentModel) || normalizeToCcAlias(sessionModel) || 'sonnet';
-          const suggestion = `Pass model="${tierAlias}" explicitly on this ${toolName} call — tier aliases resolve cleanly on Bedrock.`;
+          const tierAlias = normalizeToCcAlias(sessionModel) || 'sonnet';
+          const resolvedSafe = resolveTierAliasToSafeModel(tierAlias);
+          const suggestion = resolvedSafe
+            ? `Pass model="${tierAlias}" explicitly on this ${toolName} call — tier aliases resolve cleanly on Bedrock.`
+            : `Pass model="${tierAlias}" explicitly on this ${toolName} call, and set ANTHROPIC_DEFAULT_${tierAlias.toUpperCase()}_MODEL=<valid-bedrock-id> in settings.json env.`;
           console.log(JSON.stringify({
             continue: true,
             hookSpecificOutput: {
@@ -762,20 +793,15 @@ async function main() {
         // with 400. Detect it here and deny with guidance to retry with an explicit tier alias.
         if (!toolModel && toolInput.subagent_type) {
           const agentDefModel = readAgentDefinitionModel(toolInput.subagent_type);
-          const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-          // Only deny when OMC_SUBAGENT_MODEL is configured as a valid provider-specific ID.
+          // Only deny when a safe routing target exists for the derived tier alias.
           // Without a routing target the tier-alias escape hatch doesn't exist, so blocking
           // would strand Claude in a retry loop with no viable path forward.
+          const defTierAlias = agentDefModel ? normalizeToCcAlias(agentDefModel) : null;
+          const resolvedModel = defTierAlias ? resolveTierAliasToSafeModel(defTierAlias) : '';
+          const hasSafeRouting = !!resolvedModel;
           if (agentDefModel && !isSubagentSafeModelId(agentDefModel) && !isTierAlias(agentDefModel)
-              && isSubagentSafeModelId(subagentModel)) {
-            const tierAlias = normalizeToCcAlias(agentDefModel);
-            const guidance = tierAlias
-              ? (subagentModel
-                  ? `Add model="${tierAlias}" to this ${toolName} call — OMC will route it through OMC_SUBAGENT_MODEL (${subagentModel}).`
-                  : `Add model="${tierAlias}" to this ${toolName} call and set OMC_SUBAGENT_MODEL=<valid-bedrock-id>.`)
-              : (subagentModel
-                  ? `Add model="${subagentModel}" (your configured OMC_SUBAGENT_MODEL) explicitly to this ${toolName} call.`
-                  : `Set OMC_SUBAGENT_MODEL=<valid-bedrock-id> and add it as the model parameter on this ${toolName} call.`);
+              && hasSafeRouting) {
+            const guidance = `Add model="${defTierAlias}" to this ${toolName} call — tier aliases resolve to configured provider models (${resolvedModel}).`;
             const agentType = (toolInput.subagent_type).replace(/^oh-my-claudecode:/, '');
             console.log(JSON.stringify({
               continue: true,
@@ -836,7 +862,7 @@ async function main() {
     let message;
     if (toolName === 'Task' || toolName === 'TaskCreate' || toolName === 'TaskUpdate') {
       const toolInput = data.toolInput || data.tool_input || null;
-      message = generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId);
+      message = generateAgentSpawnMessage(toolInput, stateDir, todoStatus, sessionId);
     } else {
       message = generateMessage(toolName, todoStatus, modeActive);
     }

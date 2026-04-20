@@ -33,6 +33,16 @@ function runPreToolEnforcerWithEnv(input, env = {}) {
             OMC_SUBAGENT_MODEL: '',
             CLAUDE_MODEL: '',
             ANTHROPIC_MODEL: '',
+            // Reset tier-resolution chain env vars (resolveTierAliasToSafeModel reads these).
+            OMC_MODEL_LOW: '',
+            OMC_MODEL_MEDIUM: '',
+            OMC_MODEL_HIGH: '',
+            CLAUDE_CODE_BEDROCK_HAIKU_MODEL: '',
+            CLAUDE_CODE_BEDROCK_SONNET_MODEL: '',
+            CLAUDE_CODE_BEDROCK_OPUS_MODEL: '',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: '',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: '',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: '',
             ...env,
         },
     });
@@ -389,22 +399,177 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
             OMC_ROUTING_FORCE_INHERIT: 'true',
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
         });
-        // Tier alias + OMC_SUBAGENT_MODEL configured → allow through; Agent tool routes via OMC_SUBAGENT_MODEL
+        // Tier alias + OMC_SUBAGENT_MODEL configured → allow through
         expect(output.continue).toBe(true);
         expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
-    it('blocks tier alias "sonnet" when OMC_SUBAGENT_MODEL is NOT set in forceInherit mode', () => {
+    // --- ANTHROPIC_DEFAULT_*_MODEL resolution (eliminates mandatory OMC_SUBAGENT_MODEL) ---
+    it('allows tier alias "sonnet" via ANTHROPIC_DEFAULT_SONNET_MODEL without OMC_SUBAGENT_MODEL', () => {
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Agent',
             toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'sonnet' },
             cwd: tempDir,
-            session_id: 'session-tier-alias-no-subagent',
+            session_id: 'session-tier-default-sonnet',
         }, {
             OMC_ROUTING_FORCE_INHERIT: 'true',
             OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'global.anthropic.claude-sonnet-4-6',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('allows tier alias "opus" via ANTHROPIC_DEFAULT_OPUS_MODEL without OMC_SUBAGENT_MODEL', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'opus' },
+            cwd: tempDir,
+            session_id: 'session-tier-default-opus',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'global.anthropic.claude-opus-4-6-v1',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('allows tier alias "haiku" via ANTHROPIC_DEFAULT_HAIKU_MODEL without OMC_SUBAGENT_MODEL', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'haiku' },
+            cwd: tempDir,
+            session_id: 'session-tier-default-haiku',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'global.anthropic.claude-haiku-4-5-20251001-v1:0',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('OMC_SUBAGENT_MODEL takes priority over ANTHROPIC_DEFAULT_*_MODEL when both set', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-priority',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'us.anthropic.claude-sonnet-4-5-v1:0',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('accepts ANTHROPIC_DEFAULT_*_MODEL with [1m] suffix — CC handles [1m] correctly for explicit tier alias calls', () => {
+        // Live-tested 2026-04-16: `claude -p --model sonnet` succeeds when
+        // ANTHROPIC_DEFAULT_SONNET_MODEL=global.anthropic.claude-sonnet-4-6[1m].
+        // CC resolves [1m]-suffixed values correctly for explicit model= calls;
+        // only the inheritance path (stripping [1m] from session model) is broken.
+        // resolveTierAliasToSafeModel uses isProviderSpecificModelId (not isSubagentSafeModelId)
+        // so [1m]-suffixed provider IDs are valid routing targets.
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-default-lm',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'global.anthropic.claude-sonnet-4-6[1m]',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('resolves via CLAUDE_CODE_BEDROCK_SONNET_MODEL as sole configured env var', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-cc-bedrock-env',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            CLAUDE_CODE_BEDROCK_SONNET_MODEL: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('OMC_MODEL_MEDIUM is not used as routing proof; ANTHROPIC_DEFAULT_SONNET_MODEL resolves the alias', () => {
+        // OMC_MODEL_* is excluded from the resolution chain because CC itself does not read it
+        // for tier-alias routing. ANTHROPIC_DEFAULT_SONNET_MODEL (even with [1m]) is accepted
+        // since CC handles that suffix correctly for explicit model= calls.
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-omc-model-fallback',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            OMC_MODEL_MEDIUM: 'global.anthropic.claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'global.anthropic.claude-sonnet-4-6[1m]',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('blocks tier alias when only OMC_MODEL_* is set (not a CC-side routing proof)', () => {
+        // OMC_MODEL_* proves OMC-bridge routing, not CC model resolution. Without a CC-native
+        // var (ANTHROPIC_DEFAULT_* or CLAUDE_CODE_BEDROCK_*), CC cannot route the tier alias
+        // and the downstream Agent/Task call would fail — so the hook must deny.
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-omc-model-only',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            OMC_MODEL_MEDIUM: 'global.anthropic.claude-sonnet-4-6',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: '',
+            CLAUDE_CODE_BEDROCK_SONNET_MODEL: '',
         });
         const hookOutput = output.hookSpecificOutput;
         expect(hookOutput.permissionDecisionReason).toContain('MODEL ROUTING');
+    });
+    it('blocks tier alias when NO safe model env is configured at all', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'sonnet' },
+            cwd: tempDir,
+            session_id: 'session-tier-alias-no-env',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: '',
+        });
+        const hookOutput = output.hookSpecificOutput;
+        expect(hookOutput.permissionDecisionReason).toContain('MODEL ROUTING');
+    });
+    it('agent-definition deny works via ANTHROPIC_DEFAULT_*_MODEL without OMC_SUBAGENT_MODEL', () => {
+        const pluginRoot = join(tempDir, 'bare-model-default-env');
+        const agentsDir = join(pluginRoot, 'agents');
+        mkdirSync(agentsDir, { recursive: true });
+        writeFileSync(join(agentsDir, 'critic.md'), '---\nname: critic\nmodel: claude-opus-4-6\n---\nPlugin critic body.');
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: {
+                subagent_type: 'oh-my-claudecode:critic',
+                description: 'Review spec',
+                prompt: 'Review this spec',
+            },
+            cwd: tempDir,
+            session_id: 'session-agent-def-default-env',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_OPUS_MODEL: 'global.anthropic.claude-opus-4-6-v1',
+            CLAUDE_PLUGIN_ROOT: pluginRoot,
+        });
+        const hookOutput = output.hookSpecificOutput;
+        expect(output.continue).toBe(true);
+        expect(hookOutput.permissionDecision).toBe('deny');
+        expect(hookOutput.permissionDecisionReason).toContain('[MODEL ROUTING]');
+        expect(hookOutput.permissionDecisionReason).toContain('claude-opus-4-6');
     });
     it('blocks tier alias when OMC_SUBAGENT_MODEL is itself a bare Anthropic model ID', () => {
         const output = runPreToolEnforcerWithEnv({
@@ -446,7 +611,11 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         expect(hookOutput.permissionDecisionReason).toContain('MODEL ROUTING');
     });
     // === Agent definition model routing (issue: subagent_type bare-model-id on Bedrock) ===
-    it('denies Agent call with subagent_type whose definition has a bare Anthropic model ID when forceInherit is enabled', () => {
+    it('denies Agent call when a discovered plugin agent definition has a bare Anthropic model ID', () => {
+        const pluginRoot = join(tempDir, 'bare-model-plugin-agent');
+        const agentsDir = join(pluginRoot, 'agents');
+        mkdirSync(agentsDir, { recursive: true });
+        writeFileSync(join(agentsDir, 'critic.md'), '---\nname: critic\nmodel: claude-opus-4-6\n---\nPlugin critic body.');
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Agent',
             toolInput: {
@@ -459,6 +628,7 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         }, {
             OMC_ROUTING_FORCE_INHERIT: 'true',
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
+            CLAUDE_PLUGIN_ROOT: pluginRoot,
         });
         const hookOutput = output.hookSpecificOutput;
         expect(output.continue).toBe(true);
@@ -466,7 +636,11 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         expect(hookOutput.permissionDecisionReason).toContain('[MODEL ROUTING]');
         expect(hookOutput.permissionDecisionReason).toContain('claude-opus-4-6');
     });
-    it('denies Task call with subagent_type whose definition has a bare Anthropic model ID when forceInherit is enabled', () => {
+    it('denies Task call when a discovered plugin agent definition has a bare Anthropic model ID', () => {
+        const pluginRoot = join(tempDir, 'bare-model-plugin-task');
+        const agentsDir = join(pluginRoot, 'agents');
+        mkdirSync(agentsDir, { recursive: true });
+        writeFileSync(join(agentsDir, 'executor.md'), '---\nname: executor\nmodel: claude-sonnet-4-6\n---\nPlugin executor body.');
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Task',
             toolInput: {
@@ -479,13 +653,18 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         }, {
             OMC_ROUTING_FORCE_INHERIT: 'true',
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
+            CLAUDE_PLUGIN_ROOT: pluginRoot,
         });
         const hookOutput = output.hookSpecificOutput;
         expect(output.continue).toBe(true);
         expect(hookOutput.permissionDecision).toBe('deny');
         expect(hookOutput.permissionDecisionReason).toContain('[MODEL ROUTING]');
     });
-    it('deny message includes the bare model from the definition and suggests the tier alias', () => {
+    it('deny message includes the bare model from a plugin definition and suggests the tier alias', () => {
+        const pluginRoot = join(tempDir, 'bare-model-plugin-message');
+        const agentsDir = join(pluginRoot, 'agents');
+        mkdirSync(agentsDir, { recursive: true });
+        writeFileSync(join(agentsDir, 'critic.md'), '---\nname: critic\nmodel: claude-opus-4-6\n---\nPlugin critic body.');
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Agent',
             toolInput: {
@@ -498,11 +677,12 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         }, {
             OMC_ROUTING_FORCE_INHERIT: 'true',
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
+            CLAUDE_PLUGIN_ROOT: pluginRoot,
         });
         const reason = output.hookSpecificOutput.permissionDecisionReason;
         expect(reason).toContain('claude-opus-4-6');
         expect(reason).toContain('opus'); // tier alias suggestion
-        expect(reason).toContain('global.anthropic.claude-sonnet-4-6'); // OMC_SUBAGENT_MODEL routing
+        expect(reason).toContain('global.anthropic.claude-sonnet-4-6'); // resolved safe model in guidance
     });
     it('allows tier alias with OMC_SUBAGENT_MODEL set (escape hatch for denied subagent_type calls)', () => {
         const output = runPreToolEnforcerWithEnv({
@@ -558,6 +738,23 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         expect(output.continue).toBe(true);
         expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
+    it('does not deny shipped agent definitions that use routable tier aliases in frontmatter', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: {
+                subagent_type: 'oh-my-claudecode:critic',
+                description: 'Review spec',
+                prompt: 'Review this spec',
+            },
+            cwd: tempDir,
+            session_id: 'session-shipped-tier-alias',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6-v1:0',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
     it('does not throw or deny when subagent_type is a non-string value', () => {
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Agent',
@@ -592,7 +789,7 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         expect(output.continue).toBe(true);
         expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
-    it('falls back to script-relative agents dir when CLAUDE_PLUGIN_ROOT points to a non-existent path', () => {
+    it('falls back to script-relative agents dir when CLAUDE_PLUGIN_ROOT points to a non-existent path and allows shipped tier aliases', () => {
         const output = runPreToolEnforcerWithEnv({
             tool_name: 'Agent',
             toolInput: {
@@ -607,14 +804,10 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
             CLAUDE_PLUGIN_ROOT: '/nonexistent/path/that/does/not/exist',
         });
-        // Despite stale CLAUDE_PLUGIN_ROOT, falls back to script-relative agents dir and detects bare model
-        const hookOutput = output.hookSpecificOutput;
         expect(output.continue).toBe(true);
-        expect(hookOutput.permissionDecision).toBe('deny');
-        expect(hookOutput.permissionDecisionReason).toContain('[MODEL ROUTING]');
-        expect(hookOutput.permissionDecisionReason).toContain('claude-opus-4-6');
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
-    it('falls back to script-relative agents dir when CLAUDE_PLUGIN_ROOT/agents exists but lacks the specific agent file', () => {
+    it('falls back to script-relative agents dir when CLAUDE_PLUGIN_ROOT/agents exists but lacks the specific agent file, and allows shipped tier aliases', () => {
         // CLAUDE_PLUGIN_ROOT/agents/ exists (non-empty check passes) but does not contain critic.md
         const pluginRoot = join(tempDir, 'partial-plugin');
         const pluginAgentsDir = join(pluginRoot, 'agents');
@@ -635,12 +828,8 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
             OMC_SUBAGENT_MODEL: 'global.anthropic.claude-sonnet-4-6',
             CLAUDE_PLUGIN_ROOT: pluginRoot,
         });
-        // Should fall back to script-relative agents/, find critic.md, and deny on bare model ID
-        const hookOutput = output.hookSpecificOutput;
         expect(output.continue).toBe(true);
-        expect(hookOutput.permissionDecision).toBe('deny');
-        expect(hookOutput.permissionDecisionReason).toContain('[MODEL ROUTING]');
-        expect(hookOutput.permissionDecisionReason).toContain('claude-opus-4-6');
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
     it('does not deny when model: appears inside a body --- block (not real frontmatter)', () => {
         // File starts with normal text, then a horizontal-rule --- section containing model:

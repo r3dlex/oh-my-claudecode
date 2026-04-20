@@ -72,6 +72,85 @@ const KEYWORD_PRIORITY: KeywordType[] = [
 ];
 
 /**
+ * Canonical workflow skills detected via explicit slash invocation.
+ * Mirrors `CANONICAL_WORKFLOW_SKILLS` in `skill-state/index.ts`. Listed here
+ * (rather than imported) to keep the keyword-detector free of cross-module
+ * dependencies on skill-state.
+ */
+const CANONICAL_WORKFLOW_SLASH_SKILLS = [
+  'autopilot',
+  'ralph',
+  'team',
+  'ultrawork',
+  'ultraqa',
+  'deep-interview',
+  'ralplan',
+  'self-improve',
+] as const;
+
+export type CanonicalWorkflowSlashSkill =
+  (typeof CANONICAL_WORKFLOW_SLASH_SKILLS)[number];
+
+/**
+ * Map workflow slash skills to keyword types so explicit slash invocations
+ * surface alongside ordinary keyword detection. Skills with no dedicated
+ * KeywordType (`ultraqa`, `self-improve`) are intentionally absent — the
+ * bridge handles their seeding via the parser result instead of through the
+ * keyword-priority loop.
+ */
+const SLASH_SKILL_TO_KEYWORD_TYPE: Partial<
+  Record<CanonicalWorkflowSlashSkill, KeywordType>
+> = {
+  autopilot: 'autopilot',
+  ralph: 'ralph',
+  team: 'team',
+  ultrawork: 'ultrawork',
+  'deep-interview': 'deep-interview',
+  ralplan: 'ralplan',
+};
+
+const WORKFLOW_SLASH_PATTERN = new RegExp(
+  '^\\s*/(?:oh-my-claudecode:|omc:)?(' +
+    CANONICAL_WORKFLOW_SLASH_SKILLS
+      .map((skill) => skill.replace(/-/g, '\\-'))
+      .join('|') +
+    ')(?=\\s|$|[?!.,;:])',
+  'i',
+);
+
+export interface ExplicitWorkflowSlashInvocation {
+  /** Canonical workflow skill name (lowercase, no `oh-my-claudecode:` prefix). */
+  skill: CanonicalWorkflowSlashSkill;
+  /** Trailing arguments after the slash command. */
+  args: string;
+  /** Raw matched prefix (including any namespace prefix and the skill name). */
+  raw: string;
+}
+
+/**
+ * Parse an explicit workflow slash invocation at the start of a prompt.
+ *
+ * Recognizes `/<skill>`, `/omc:<skill>`, and `/oh-my-claudecode:<skill>` for
+ * the canonical workflow skill list. Code fences and inline backticks are
+ * stripped first so quoted commands do not match. The trailing lookahead
+ * (whitespace, end-of-text, or punctuation) prevents file paths like
+ * `/ralph-logs/foo.txt` from matching `/ralph`.
+ *
+ * Returns `null` when no explicit invocation is present.
+ */
+export function parseExplicitWorkflowSlashInvocation(
+  promptText: string,
+): ExplicitWorkflowSlashInvocation | null {
+  if (typeof promptText !== 'string' || promptText.length === 0) return null;
+  const stripped = removeCodeBlocks(promptText);
+  const match = WORKFLOW_SLASH_PATTERN.exec(stripped);
+  if (!match) return null;
+  const skill = match[1].toLowerCase() as CanonicalWorkflowSlashSkill;
+  const args = stripped.slice(match[0].length).trim();
+  return { skill, args, raw: match[0] };
+}
+
+/**
  * Remove code blocks from text to prevent false positives
  * Handles both fenced code blocks and inline code
  */
@@ -84,6 +163,131 @@ export function removeCodeBlocks(text: string): string {
   result = result.replace(/`[^`]+`/g, '');
 
   return result;
+}
+
+const PASTED_MAGIC_KEYWORD_HEADER_PATTERN =
+  /^\s*\[MAGIC KEYWORDS?(?: DETECTED)?:.*$/i;
+const ROLE_BOUNDARY_PATTERN =
+  /^<\s*\/?\s*(system|human|assistant|user|tool_use|tool_result)\b[^>]*>/i;
+const SKILL_TRANSCRIPT_LINE_PATTERN =
+  /^\s*Skill:\s+oh-my-(?:claudecode|codex):/i;
+const USER_REQUEST_LINE_PATTERN = /^\s*User request:\s*$/i;
+const SHELL_TRANSCRIPT_LINE_PATTERN = /^\s*[$%❯]\s+/;
+const GIT_DIFF_START_PATTERNS: RegExp[] = [
+  /^diff\s+--git\s+a\//,
+  /^index\s+[0-9a-f]+\.\.[0-9a-f]+(?:\s+\d+)?$/i,
+  /^(?:---|\+\+\+)\s+[ab]\//,
+  /^@@\s+-\d+/,
+];
+const GIT_DIFF_CONTINUATION_PATTERNS: RegExp[] = [
+  /^new file mode\s+\d+$/i,
+  /^deleted file mode\s+\d+$/i,
+  /^similarity index\s+\d+%$/i,
+  /^rename (?:from|to)\s+/i,
+  /^Binary files .+ differ$/i,
+  /^(?:diff\s+--git\s+a\/|index\s+[0-9a-f]+\.\.[0-9a-f]+|(?:---|\+\+\+)\s+[ab]\/|@@\s+-\d+)/i,
+  /^[ +\-].*/,
+];
+
+function stripPastedCommandPayloads(text: string): string {
+  const lines = text.split('\n');
+  const sanitized: string[] = [];
+  let insideRoleBlock = false;
+  let insideDiffBlock = false;
+  let insideMagicKeywordBlock = false;
+  let magicBlockSawUserRequest = false;
+  let magicBlockSawRequestPayload = false;
+  let previousLineWasUserRequest = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (insideMagicKeywordBlock) {
+      if (ROLE_BOUNDARY_PATTERN.test(trimmed)) {
+        insideRoleBlock = !/^<\s*\//.test(trimmed);
+        insideMagicKeywordBlock = false;
+        magicBlockSawUserRequest = false;
+        magicBlockSawRequestPayload = false;
+        continue;
+      }
+
+      if (USER_REQUEST_LINE_PATTERN.test(line)) {
+        magicBlockSawUserRequest = true;
+        magicBlockSawRequestPayload = false;
+        continue;
+      }
+
+      if (magicBlockSawUserRequest) {
+        if (trimmed) {
+          magicBlockSawRequestPayload = true;
+          continue;
+        }
+
+        if (magicBlockSawRequestPayload) {
+          insideMagicKeywordBlock = false;
+          magicBlockSawUserRequest = false;
+          magicBlockSawRequestPayload = false;
+          sanitized.push(line);
+          continue;
+        }
+      }
+
+      continue;
+    }
+
+    if (PASTED_MAGIC_KEYWORD_HEADER_PATTERN.test(line)) {
+      insideMagicKeywordBlock = true;
+      magicBlockSawUserRequest = false;
+      magicBlockSawRequestPayload = false;
+      continue;
+    }
+
+    if (ROLE_BOUNDARY_PATTERN.test(trimmed)) {
+      insideRoleBlock = !/^<\s*\//.test(trimmed);
+      continue;
+    }
+
+    if (insideRoleBlock) {
+      continue;
+    }
+
+    if (!trimmed) {
+      sanitized.push(line);
+      insideDiffBlock = false;
+      previousLineWasUserRequest = false;
+      continue;
+    }
+
+    if (previousLineWasUserRequest) {
+      previousLineWasUserRequest = false;
+      continue;
+    }
+
+    if (USER_REQUEST_LINE_PATTERN.test(line) || SKILL_TRANSCRIPT_LINE_PATTERN.test(line)) {
+      previousLineWasUserRequest = USER_REQUEST_LINE_PATTERN.test(line);
+      continue;
+    }
+
+    if (SHELL_TRANSCRIPT_LINE_PATTERN.test(line) && !/^\s*\$\w/.test(line)) {
+      continue;
+    }
+
+    if (insideDiffBlock) {
+      if (GIT_DIFF_CONTINUATION_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+        continue;
+      }
+      insideDiffBlock = false;
+    }
+
+    if (GIT_DIFF_START_PATTERNS.some((pattern) => pattern.test(trimmed))) {
+      insideDiffBlock = true;
+      continue;
+    }
+
+    sanitized.push(line);
+  }
+
+  return sanitized.join('\n');
 }
 
 
@@ -101,8 +305,9 @@ export const NON_LATIN_SCRIPT_PATTERN =
  * Strips XML tags, URLs, file paths, and code blocks.
  */
 export function sanitizeForKeywordDetection(text: string): string {
+  let result = stripPastedCommandPayloads(text);
   // Remove HTML/markdown comments first so keywords inside comments cannot trigger modes
-  let result = text.replace(/<!--[\s\S]*?-->/g, '');
+  result = result.replace(/<!--[\s\S]*?-->/g, '');
   // Remove XML tag blocks (opening + content + closing; tag names must match)
   result = result.replace(/<(\w[\w-]*)[\s>][\s\S]*?<\/\1>/g, '');
   // Remove self-closing XML tags
@@ -221,6 +426,43 @@ function hasActivationIntentNearKeyword(context: string, keyword: string): boole
   return patterns.some((pattern) => pattern.test(context));
 }
 
+function hasDirectInvocationPrefix(text: string, position: number): boolean {
+  const prefix = text.slice(0, position);
+  return /^\s*(?:[$/!]\s*|force:\s*|oh-my-(?:claudecode|codex):\s*)?$/i.test(prefix);
+}
+
+function hasExplicitInvocationContext(
+  text: string,
+  position: number,
+  keywordLength: number,
+  keywordText: string,
+): boolean {
+  if (hasDirectInvocationPrefix(text, position)) {
+    return true;
+  }
+
+  const start = Math.max(0, position - INFORMATIONAL_CONTEXT_WINDOW);
+  const end = Math.min(text.length, position + keywordLength + INFORMATIONAL_CONTEXT_WINDOW);
+  const context = text.slice(start, end);
+  if (hasActivationIntentNearKeyword(context, keywordText)) {
+    return true;
+  }
+
+  const escaped = escapeRegExp(keywordText.trim());
+  if (!escaped) {
+    return false;
+  }
+
+  const conversationalInvocationPatterns = [
+    new RegExp(`\\bplease\\s+${escaped}\\b`, 'i'),
+    new RegExp(`\\blet['’]?s\\s+${escaped}\\b`, 'i'),
+    new RegExp(`\\bi\\s+(?:want|need|would\\s+like)\\s+(?:a|an)\\s+${escaped}\\b`, 'i'),
+    new RegExp(`\\b(?:can|could|would|will)\\s+you\\s+${escaped}\\b`, 'i'),
+  ];
+
+  return conversationalInvocationPatterns.some((pattern) => pattern.test(context));
+}
+
 function hasDiagnosticIntentNearKeyword(context: string, keyword: string): boolean {
   const escaped = escapeRegExp(keyword.trim());
   if (!escaped) return false;
@@ -311,6 +553,36 @@ function findActionableKeywordMatch(
   return null;
 }
 
+function findActionableRalplanMatch(
+  text: string,
+  pattern: RegExp,
+): Omit<DetectedKeyword, 'type'> | null {
+  const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+  const globalPattern = new RegExp(pattern.source, flags);
+
+  for (const match of text.matchAll(globalPattern)) {
+    if (match.index === undefined) {
+      continue;
+    }
+
+    const keyword = match[0];
+    if (isInformationalKeywordContext(text, match.index, keyword.length, keyword)) {
+      continue;
+    }
+
+    if (!hasExplicitInvocationContext(text, match.index, keyword.length, keyword)) {
+      continue;
+    }
+
+    return {
+      keyword,
+      position: match.index,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Extract prompt text from message parts
  */
@@ -331,6 +603,26 @@ export function detectKeywordsWithType(
   _agentName?: string
 ): DetectedKeyword[] {
   const detected: DetectedKeyword[] = [];
+
+  // Check for an explicit canonical workflow slash invocation BEFORE sanitization.
+  // The general sanitizer strips bare `/word` tokens as file paths, so bare
+  // commands like `/ralph fix auth` would otherwise never match. This must be
+  // robust to surrounding whitespace, namespace prefixes (`/omc:`,
+  // `/oh-my-claudecode:`), and code-fence/backtick wrapping (handled inside
+  // the parser via removeCodeBlocks).
+  const explicitSlash = parseExplicitWorkflowSlashInvocation(text);
+  const explicitSlashType = explicitSlash
+    ? SLASH_SKILL_TO_KEYWORD_TYPE[explicitSlash.skill]
+    : undefined;
+  if (explicitSlash && explicitSlashType) {
+    const position = Math.max(0, text.indexOf(explicitSlash.raw.trim()));
+    detected.push({
+      type: explicitSlashType,
+      keyword: explicitSlash.raw.trim(),
+      position,
+    });
+  }
+
   const cleanedText = sanitizeForKeywordDetection(text);
 
   // Check each keyword type
@@ -340,8 +632,17 @@ export function detectKeywordsWithType(
       continue;
     }
 
+    // Skip the type that the explicit-slash detector already surfaced so we
+    // do not emit duplicate entries for the same intent.
+    if (explicitSlashType && type === explicitSlashType) {
+      continue;
+    }
+
     const pattern = KEYWORD_PATTERNS[type];
-    const match = findActionableKeywordMatch(cleanedText, pattern);
+    const match =
+      type === 'ralplan'
+        ? findActionableRalplanMatch(cleanedText, pattern)
+        : findActionableKeywordMatch(cleanedText, pattern);
 
     if (match) {
       detected.push({

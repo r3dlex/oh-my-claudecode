@@ -1,4 +1,4 @@
-export type CliAgentType = 'claude' | 'codex' | 'gemini';
+export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor';
 export interface CliAgentContract {
     agentType: CliAgentType;
     binary: string;
@@ -21,6 +21,12 @@ export interface WorkerLaunchConfig {
      * Used by runtime preflight validation to ensure spawns are pinned.
      */
     resolvedBinaryPath?: string;
+    /**
+     * Optional path the worker writes its structured verdict JSON to
+     * (used by the CLI-worker output contract for critic/reviewer stages).
+     * Consumed by the worker-completion handler in runtime-v2.
+     */
+    output_file?: string;
 }
 /** @deprecated Backward-compat shim for older team API consumers. */
 export interface CliBinaryValidation {

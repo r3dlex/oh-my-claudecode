@@ -44,6 +44,7 @@ import {
   waitDetectCommand
 } from './commands/wait.js';
 import { doctorConflictsCommand } from './commands/doctor-conflicts.js';
+import { doctorTeamRoutingCommand } from './commands/doctor-team-routing.js';
 import { sessionSearchCommand } from './commands/session-search.js';
 import { teamCommand } from './commands/team.js';
 import { ralphthonCommand } from './commands/ralphthon.js';
@@ -1172,12 +1173,37 @@ const doctorCmd = program
   .command('doctor')
   .description('Diagnostic tools for troubleshooting OMC installation')
   .option('--plugin-dir <path>', 'Override OMC plugin root directory (sets OMC_PLUGIN_ROOT)')
+  .option('--team-routing', 'Probe CLI presence for every provider referenced by team.roleRouting')
+  .option('--json', 'Output as JSON (used with --team-routing)')
   .addHelpText('after', `
 Examples:
   $ omc doctor conflicts                        Check for plugin conflicts
+  $ omc doctor team-routing                     Probe /team role-routing provider CLIs
+  $ omc doctor --team-routing                   Same as above (flag form)
   $ omc doctor --plugin-dir /path/to/plugin     Run diagnostics against a specific plugin dir`)
   .hook('preAction', (thisCommand) => {
     applyPluginDirOption(thisCommand.opts().pluginDir as string | undefined);
+  })
+  .action(async (options) => {
+    if (options.teamRouting) {
+      const exitCode = await doctorTeamRoutingCommand({ json: options.json ?? false });
+      process.exit(exitCode);
+    }
+    // Without --team-routing, show help text for the parent command.
+    doctorCmd.help();
+  });
+
+doctorCmd
+  .command('team-routing')
+  .description('Probe CLI presence for every provider referenced by team.roleRouting')
+  .option('--json', 'Output as JSON')
+  .addHelpText('after', `
+Examples:
+  $ omc doctor team-routing                     Probe configured providers
+  $ omc doctor team-routing --json              Output results as JSON`)
+  .action(async (options) => {
+    const exitCode = await doctorTeamRoutingCommand({ json: options.json ?? false });
+    process.exit(exitCode);
   });
 
 doctorCmd
@@ -1400,11 +1426,11 @@ program
   });
 
 /**
- * Autoresearch command - thin-supervisor autoresearch with keep/discard/reset parity
+ * Autoresearch command - hard-deprecated shim preserved only for migration messaging
  */
 program
   .command('autoresearch')
-  .description('Launch thin-supervisor autoresearch with keep/discard/reset parity')
+  .description('Hard-deprecated shim that redirects users to deep-interview + autoresearch skill')
   .helpOption(false)
   .allowUnknownOption(true)
   .allowExcessArguments(true)
