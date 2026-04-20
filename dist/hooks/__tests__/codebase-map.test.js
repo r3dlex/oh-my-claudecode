@@ -3,7 +3,7 @@
  *
  * Issue #804 - Startup codebase map injection hook
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -276,6 +276,26 @@ describe('buildAgentsOverlay', () => {
         const matches = result.message.match(/\[Map truncated/g);
         expect(matches).not.toBeNull();
         expect(matches.length).toBe(1);
+    });
+    it('returns empty result when startupCodebaseMap.enabled is false', async () => {
+        vi.resetModules();
+        vi.doMock('../../config/loader.js', () => ({
+            loadConfig: () => ({ startupCodebaseMap: { enabled: false } }),
+        }));
+        const { buildAgentsOverlay: buildOverlay } = await import('../agents-overlay.js');
+        writeFile(tempDir, 'src/index.ts', '');
+        const result = buildOverlay(tempDir);
+        expect(result.hasCodebaseMap).toBe(false);
+        expect(result.message).toBe('');
+        vi.doUnmock('../../config/loader.js');
+        vi.resetModules();
+    });
+    it('respects options.maxFiles passed explicitly', () => {
+        for (let i = 0; i < 5; i++) {
+            writeFile(tempDir, `file${i}.ts`, '');
+        }
+        const result = buildAgentsOverlay(tempDir, { maxFiles: 3, maxDepth: 4, ignorePatterns: [], includeMetadata: true });
+        expect(result.hasCodebaseMap).toBe(true);
     });
 });
 //# sourceMappingURL=codebase-map.test.js.map

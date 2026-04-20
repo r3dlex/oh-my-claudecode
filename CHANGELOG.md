@@ -1,3 +1,29 @@
+# oh-my-claudecode v4.11.8: branch coverage to 80%+ with additional test suites
+
+## Release Notes
+
+Release with **0 new features**, **0 bug fixes**, **6 other changes** across **0 merged PRs** (maintenance / coverage release).
+
+### Highlights
+
+- **chore(tests): achieve 80%+ branch coverage with 6 new test suites and targeted expansions**
+
+### Other Changes
+
+- **Add branch-coverage tests for ContextCollector (hasPending, getEntryCount, removeEntry, getActiveSessions, priority sorting, consume)**
+- **Add branch-coverage tests for skill-pipeline (parseSkillPipelineMetadata, renderSkillPipelineGuidance)**
+- **Add branch-coverage tests for frontmatter utilities (parseFrontmatterList, parseFrontmatterAliases edge cases)**
+- **Expand learner/parser tests: quality:0, usageCount:0, single-string triggers/tags, blank-line arrays, generateSkillFrontmatter**
+- **Expand openclaw/signal tests: session-end/stop/ask-user-question, PR phases, exit-code prefix branches, Edit/Write tool detection**
+- **Expand openclaw/dedupe tests: malformed JSON resilience, pruneState TTL, descriptor edge cases**
+
+### Stats
+
+- **0 PRs merged** | **0 new features** | **0 bug fixes** | **6 other changes**
+- **Coverage**: Statements 87.47% | Branches 80.00% | Functions 91.51% | Lines 88.30%
+
+---
+
 # oh-my-claudecode v4.11.7: coverage improvements and test additions
 
 ## Release Notes

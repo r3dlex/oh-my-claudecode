@@ -57,6 +57,12 @@ export interface InstallOptions {
      * `noPlugin` (the CLI gives `noPlugin` precedence).
      */
     pluginDirMode?: boolean;
+    /**
+     * Target directory for skill installation.
+     * - 'project' (default): install to `./.claude/skills` (project-level)
+     * - 'omc': install to `~/.claude/skills` (user-level OMC)
+     */
+    skillsTargetDir?: 'omc' | 'project';
 }
 /**
  * Read hudEnabled from .omc-config.json without importing auto-update

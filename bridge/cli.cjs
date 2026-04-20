@@ -9313,6 +9313,7 @@ function syncBundledSkillDefinitions(log3, options) {
   if (!(0, import_fs36.existsSync)(skillsDir)) {
     return installedSkills;
   }
+  const targetBaseDir = options?.targetDir ?? SKILLS_DIR;
   const seenTargetDirs = /* @__PURE__ */ new Set();
   for (const entry of (0, import_fs36.readdirSync)(skillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
@@ -9333,7 +9334,7 @@ function syncBundledSkillDefinitions(log3, options) {
     if (seenTargetDirs.has(dedupeKey)) continue;
     seenTargetDirs.add(dedupeKey);
     const relativePath = (0, import_path48.join)(targetDirName, "SKILL.md");
-    const targetDir = (0, import_path48.join)(SKILLS_DIR, targetDirName);
+    const targetDir = (0, import_path48.join)(targetBaseDir, targetDirName);
     (0, import_fs36.cpSync)(sourceDir, targetDir, { recursive: true, force: true });
     markSkillAsOmcManaged(targetDir);
     installedSkills.push(relativePath.replace(/\\/g, "/"));
@@ -9590,9 +9591,22 @@ function install(options = {}) {
     }
     if (shouldInstallBundledSkills) {
       log3(options.noPlugin ? "Installing bundled skills from local package (--no-plugin)..." : !enabledOmcPlugin ? "Installing bundled skills from local package (no enabled OMC plugin detected)..." : "Installing bundled skills from local package (enabled plugin skill files not found)...");
-      result.installedSkills.push(...syncBundledSkillDefinitions(log3, {
-        safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true
-      }));
+      const projectTargetDir = (0, import_path48.join)(process.cwd(), ".claude", "skills");
+      const installProject = options.skillsTargetDir == null || options.skillsTargetDir === "project";
+      const installUser = options.skillsTargetDir === "omc";
+      if (installProject) {
+        const targetDir = options.skillsTargetDir != null ? projectTargetDir : void 0;
+        result.installedSkills.push(...syncBundledSkillDefinitions(log3, {
+          safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true,
+          targetDir
+        }));
+      }
+      if (installUser) {
+        result.installedSkills.push(...syncBundledSkillDefinitions(log3, {
+          safeStandaloneNames: !enabledOmcPlugin || options.noPlugin === true,
+          targetDir: SKILLS_DIR
+        }));
+      }
     } else if (pluginProvidesSkillFiles) {
       log3("Skipping bundled skill installation (plugin-provided skills are available). Use --no-plugin to force local skill sync.");
       const prunedSkills = prunePluginDuplicateSkills(log3);
@@ -87392,11 +87406,12 @@ Examples:
   const exitCode = await doctorConflictsCommand(options);
   process.exit(exitCode);
 });
-program2.command("setup").description("Run OMC setup to sync all components (hooks, agents, skills)").option("-f, --force", "Force reinstall even if already up to date").option("-q, --quiet", "Suppress output except for errors").option("--no-plugin", "Install bundled skills from the current package instead of relying on plugin-provided skills").option("--plugin-dir-mode", "Treat OMC as launched via --plugin-dir at runtime (skip agent/skill copy; HUD + hooks + CLAUDE.md still installed)").option("--skip-hooks", "Skip hook installation").option("--force-hooks", "Force reinstall hooks even if unchanged").addHelpText("after", `
+program2.command("setup").description("Run OMC setup to sync all components (hooks, agents, skills)").option("-f, --force", "Force reinstall even if already up to date").option("-q, --quiet", "Suppress output except for errors").option("--no-plugin", "Install bundled skills from the current package instead of relying on plugin-provided skills").option("--omc", "Also install skills to ~/.claude/skills (user-level OMC) in addition to project-level ./.claude/skills").option("--plugin-dir-mode", "Treat OMC as launched via --plugin-dir at runtime (skip agent/skill copy; HUD + hooks + CLAUDE.md still installed)").option("--skip-hooks", "Skip hook installation").option("--force-hooks", "Force reinstall hooks even if unchanged").addHelpText("after", `
 Examples:
-  $ omc setup                     Sync all OMC components
+  $ omc setup                     Sync all OMC components (project-level skills)
   $ omc setup --force             Force reinstall everything
   $ omc setup --no-plugin         Force local bundled skill installation
+  $ omc setup --omc               Also install to ~/.claude/skills (user-level OMC)
   $ omc setup --plugin-dir-mode   Skip agent/skill copy (used with claude --plugin-dir)
   $ omc setup --quiet             Silent setup for scripts
   $ omc setup --skip-hooks        Install without hooks
@@ -87430,7 +87445,8 @@ Examples:
     skipClaudeCheck: true,
     forceHooks: !!options.forceHooks,
     noPlugin: useLocalBundledSkills,
-    pluginDirMode
+    pluginDirMode,
+    skillsTargetDir: options.omc ? "omc" : "project"
   });
   if (!result.success) {
     console.error(source_default.red(`Setup failed: ${result.message}`));

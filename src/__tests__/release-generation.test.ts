@@ -139,4 +139,153 @@ describe('release generation', () => {
     expect(workflow).toContain('GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
     expect(workflow).not.toContain('generate_release_notes: true');
   });
+
+  it('categorizes perf type as features', () => {
+    const prs = [
+      { number: '1', title: 'perf(core): faster startup time', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('features')).toBe(true);
+    expect(categories.get('features')![0].type).toBe('perf');
+  });
+
+  it('categorizes fix with security scope into security category', () => {
+    const prs = [
+      { number: '2', title: 'fix(security): patch XSS vulnerability', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('security')).toBe(true);
+  });
+
+  it('categorizes chore with deps scope into security category', () => {
+    const prs = [
+      { number: '3', title: 'chore(deps): bump lodash from 4.17.20 to 4.17.21', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('security')).toBe(true);
+  });
+
+  it('categorizes fix with deps scope into security category', () => {
+    const prs = [
+      { number: '4', title: 'fix(deps): update vulnerable dependency', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('security')).toBe(true);
+  });
+
+  it('categorizes plain fix (no security scope) into fixes', () => {
+    const prs = [
+      { number: '5', title: 'fix(hud): correct icon alignment', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('fixes')).toBe(true);
+  });
+
+  it('categorizes refactor type into refactoring', () => {
+    const prs = [
+      { number: '6', title: 'refactor(cli): simplify argument parsing', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('refactoring')).toBe(true);
+  });
+
+  it('categorizes docs type into docs', () => {
+    const prs = [
+      { number: '7', title: 'docs(readme): update installation steps', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('docs')).toBe(true);
+  });
+
+  it('categorizes ci and build types into other', () => {
+    const prs = [
+      { number: '8', title: 'ci: add matrix build', author: 'dev', headRefName: null },
+      { number: '9', title: 'build: update esbuild config', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.has('other')).toBe(true);
+  });
+
+  it('skips unknown conventional types', () => {
+    const prs = [
+      { number: '10', title: 'unknown(scope): something weird', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.size).toBe(0);
+  });
+
+  it('generates changelog with security and fixes (no features)', () => {
+    const prs = [
+      { number: '11', title: 'fix(security): patch CVE', author: 'dev', headRefName: null },
+      { number: '12', title: 'fix: minor bug', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    const changelog = generateChangelog('1.0.0', categories, prs.length);
+    expect(changelog).toContain('Security Hardening');
+    expect(changelog).toContain('Bug Fixes');
+  });
+
+  it('generates maintenance release title when no notable categories', () => {
+    // 'test' type is not mapped to any category → empty map → maintenance release
+    const prs = [
+      { number: '13', title: 'test: add unit tests', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    expect(categories.size).toBe(0);
+    const changelog = generateChangelog('1.0.0', categories, prs.length);
+    expect(changelog).toContain('Maintenance Release');
+    expect(changelog).toContain('Maintenance release with internal improvements.');
+  });
+
+  it('formats entry without prNumber', () => {
+    const prs = [
+      { number: null as unknown as string, title: 'feat: add feature', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    const changelog = generateChangelog('1.0.0', categories, 1);
+    expect(changelog).not.toContain('(#');
+  });
+
+  it('formats entry with scope in conventional subject', () => {
+    const prs = [
+      { number: '14', title: 'feat(auth): add OAuth2 support', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    const changelog = generateChangelog('1.0.0', categories, 1);
+    expect(changelog).toContain('(auth)');
+  });
+
+  it('pluralizes single PR correctly', () => {
+    const prs = [
+      { number: '15', title: 'feat: one thing', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    const changelog = generateChangelog('1.0.0', categories, 1);
+    expect(changelog).toContain('1 PR merged');
+    expect(changelog).toContain('1 new feature');
+  });
+
+  it('generates release body without prevTag', () => {
+    const body = generateReleaseBody('4.0.0', '# Release', [], '');
+    expect(body).toContain('npm install -g oh-my-claude-sisyphus@4.0.0');
+    expect(body).not.toContain('Full Changelog');
+  });
+
+  it('generates release body without contributors', () => {
+    const body = generateReleaseBody('4.0.0', '# Release', [], 'v3.0.0');
+    expect(body).toContain('Full Changelog');
+    expect(body).not.toContain('Contributors');
+  });
+
+  it('generates title with more than 3 feature parts', () => {
+    const prs = [
+      { number: '1', title: 'feat: feature one', author: 'dev', headRefName: null },
+      { number: '2', title: 'feat: feature two', author: 'dev', headRefName: null },
+      { number: '3', title: 'feat: feature three', author: 'dev', headRefName: null },
+      { number: '4', title: 'feat: feature four', author: 'dev', headRefName: null },
+    ];
+    const categories = categorizeReleaseNoteEntries(buildReleaseNoteEntriesFromPullRequests(prs));
+    const changelog = generateChangelog('1.0.0', categories, prs.length);
+    expect(changelog).toContain('v1.0.0:');
+  });
 });

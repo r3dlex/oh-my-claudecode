@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripOptionalQuotes, parseFrontmatter, parseFrontmatterAliases } from '../frontmatter.js';
+import { stripOptionalQuotes, parseFrontmatter, parseFrontmatterAliases, parseFrontmatterList } from '../frontmatter.js';
 describe('stripOptionalQuotes', () => {
     it('strips double quotes', () => {
         expect(stripOptionalQuotes('"hello"')).toBe('hello');
@@ -142,6 +142,43 @@ describe('parseFrontmatterAliases', () => {
     });
     it('handles list with spaces around items', () => {
         expect(parseFrontmatterAliases('[ foo , bar , baz ]')).toEqual(['foo', 'bar', 'baz']);
+    });
+    it('returns empty array when single value is empty after stripping quotes', () => {
+        // '""' strips to "" → singleAlias is falsy → return []
+        expect(parseFrontmatterAliases('""')).toEqual([]);
+    });
+});
+describe('parseFrontmatterList', () => {
+    it('returns empty array for undefined', () => {
+        expect(parseFrontmatterList(undefined)).toEqual([]);
+    });
+    it('returns empty array for empty string', () => {
+        expect(parseFrontmatterList('')).toEqual([]);
+    });
+    it('returns empty array for whitespace-only string', () => {
+        // trimmed is empty → L82 true branch
+        expect(parseFrontmatterList('   ')).toEqual([]);
+    });
+    it('returns empty array for empty bracket list', () => {
+        // inner = "" → L86 true branch
+        expect(parseFrontmatterList('[]')).toEqual([]);
+    });
+    it('parses inline bracket list', () => {
+        expect(parseFrontmatterList('[foo, bar, baz]')).toEqual(['foo', 'bar', 'baz']);
+    });
+    it('parses single scalar value', () => {
+        // Not array syntax → single value → L95 truthy branch
+        expect(parseFrontmatterList('my-value')).toEqual(['my-value']);
+    });
+    it('returns empty array when scalar is empty after quote stripping', () => {
+        // '""' strips to "" → singleValue = "" → L95 falsy branch → []
+        expect(parseFrontmatterList('""')).toEqual([]);
+    });
+    it('filters empty items from bracket list', () => {
+        expect(parseFrontmatterList('[foo, , bar]')).toEqual(['foo', 'bar']);
+    });
+    it('strips quotes from items in bracket list', () => {
+        expect(parseFrontmatterList('["foo", \'bar\']')).toEqual(['foo', 'bar']);
     });
 });
 //# sourceMappingURL=frontmatter.test.js.map

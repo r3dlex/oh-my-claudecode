@@ -173,6 +173,25 @@ describe('createMagicKeywordProcessor', () => {
     const result = processor('powermode on this task');
     expect(result).toContain('ultrawork-mode');
   });
+
+  it('covers config.search branch — returns prompt unchanged when custom trigger does not match search pattern', () => {
+    // 'scour' is the custom trigger but NOT in the searchPattern regex → no search-mode appended
+    const processor = createMagicKeywordProcessor({ search: ['scour'] });
+    const result = processor('scour the issue');
+    expect(result).toBe('scour the issue');
+  });
+
+  it('covers config.analyze branch — returns prompt unchanged when custom trigger does not match analyze pattern', () => {
+    const processor = createMagicKeywordProcessor({ analyze: ['probe'] });
+    const result = processor('probe the issue');
+    expect(result).toBe('probe the issue');
+  });
+
+  it('covers config.ultrathink branch — returns prompt unchanged when custom trigger does not match think pattern', () => {
+    const processor = createMagicKeywordProcessor({ ultrathink: ['meditate'] });
+    const result = processor('meditate on this');
+    expect(result).toBe('meditate on this');
+  });
 });
 
 describe('extractPromptText', () => {

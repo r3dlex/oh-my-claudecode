@@ -1098,14 +1098,16 @@ program
     .option('-f, --force', 'Force reinstall even if already up to date')
     .option('-q, --quiet', 'Suppress output except for errors')
     .option('--no-plugin', 'Install bundled skills from the current package instead of relying on plugin-provided skills')
+    .option('--omc', 'Also install skills to ~/.claude/skills (user-level OMC) in addition to project-level ./.claude/skills')
     .option('--plugin-dir-mode', 'Treat OMC as launched via --plugin-dir at runtime (skip agent/skill copy; HUD + hooks + CLAUDE.md still installed)')
     .option('--skip-hooks', 'Skip hook installation')
     .option('--force-hooks', 'Force reinstall hooks even if unchanged')
     .addHelpText('after', `
 Examples:
-  $ omc setup                     Sync all OMC components
+  $ omc setup                     Sync all OMC components (project-level skills)
   $ omc setup --force             Force reinstall everything
   $ omc setup --no-plugin         Force local bundled skill installation
+  $ omc setup --omc               Also install to ~/.claude/skills (user-level OMC)
   $ omc setup --plugin-dir-mode   Skip agent/skill copy (used with claude --plugin-dir)
   $ omc setup --quiet             Silent setup for scripts
   $ omc setup --skip-hooks        Install without hooks
@@ -1147,6 +1149,7 @@ Examples:
         forceHooks: !!options.forceHooks,
         noPlugin: useLocalBundledSkills,
         pluginDirMode,
+        skillsTargetDir: options.omc ? 'omc' : 'project',
     });
     if (!result.success) {
         console.error(chalk.red(`Setup failed: ${result.message}`));
