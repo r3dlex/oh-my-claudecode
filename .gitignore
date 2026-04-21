@@ -1,15 +1,20 @@
 node_modules/
 *.log
 .DS_Store
-.omc/
-.omc/
 .idea/
 .claude/
+
+# OMC/OMX runtime state (narrow exclusion — track plans/research/parity/handoffs)
+.omc/logs/
+.omc/state/
+.omc/sessions/
+.omx/logs/
+.omx/state/
+.omx/sessions/
 
 # Windows reserved names (prevent accidental creation)
 nul
 NUL
-.omx/
 .env
 
 # Local root-level script output
