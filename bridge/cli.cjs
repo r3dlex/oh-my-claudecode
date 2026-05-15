@@ -90809,6 +90809,27 @@ function ensureMirroredPath(sourcePath, targetPath, options = {}) {
     (0, import_fs102.copyFileSync)(sourcePath, targetPath);
   }
 }
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readJsonObject4(path22) {
+  try {
+    const parsed = JSON.parse((0, import_fs102.readFileSync)(path22, "utf-8"));
+    return isJsonObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function refreshRuntimeClaudeJsonMcpServers(baseConfigDir, runtimeClaudeJsonPath) {
+  const sourceClaudeJsonPath = (0, import_path121.join)((0, import_path121.dirname)(baseConfigDir), ".claude.json");
+  const sourceClaudeJson = readJsonObject4(sourceClaudeJsonPath);
+  if (!sourceClaudeJson || !isJsonObject(sourceClaudeJson.mcpServers)) {
+    return;
+  }
+  const runtimeClaudeJson = readJsonObject4(runtimeClaudeJsonPath) ?? {};
+  runtimeClaudeJson.mcpServers = sourceClaudeJson.mcpServers;
+  (0, import_fs102.writeFileSync)(runtimeClaudeJsonPath, JSON.stringify(runtimeClaudeJson, null, 2));
+}
 function prepareOmcLaunchConfigDir(baseConfigDir = getClaudeConfigDir()) {
   const companionPath = (0, import_path121.join)(baseConfigDir, "CLAUDE-omc.md");
   if (!hasOmcMarkers(companionPath)) {
@@ -90822,6 +90843,7 @@ function prepareOmcLaunchConfigDir(baseConfigDir = getClaudeConfigDir()) {
   if (preservedClaudeJson) {
     (0, import_fs102.writeFileSync)(runtimeClaudeJsonPath, preservedClaudeJson);
   }
+  refreshRuntimeClaudeJsonMcpServers(baseConfigDir, runtimeClaudeJsonPath);
   (0, import_fs102.copyFileSync)(companionPath, (0, import_path121.join)(runtimeConfigDir, "CLAUDE.md"));
   for (const entry of [
     "agents",

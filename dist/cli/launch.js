@@ -5,7 +5,7 @@
 import { execFileSync } from 'child_process';
 import { cpSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, } from 'fs';
 import { homedir } from 'os';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { resolvePluginDirArg } from '../lib/plugin-dir.js';
 import { stripRetiredTeamMcpServers } from '../installer/mcp-registry.js';
 import { getClaudeConfigDir } from '../utils/config-dir.js';
@@ -60,6 +60,28 @@ function ensureMirroredPath(sourcePath, targetPath, options = {}) {
         copyFileSync(sourcePath, targetPath);
     }
 }
+function isJsonObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function readJsonObject(path) {
+    try {
+        const parsed = JSON.parse(readFileSync(path, 'utf-8'));
+        return isJsonObject(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
+}
+function refreshRuntimeClaudeJsonMcpServers(baseConfigDir, runtimeClaudeJsonPath) {
+    const sourceClaudeJsonPath = join(dirname(baseConfigDir), '.claude.json');
+    const sourceClaudeJson = readJsonObject(sourceClaudeJsonPath);
+    if (!sourceClaudeJson || !isJsonObject(sourceClaudeJson.mcpServers)) {
+        return;
+    }
+    const runtimeClaudeJson = readJsonObject(runtimeClaudeJsonPath) ?? {};
+    runtimeClaudeJson.mcpServers = sourceClaudeJson.mcpServers;
+    writeFileSync(runtimeClaudeJsonPath, JSON.stringify(runtimeClaudeJson, null, 2));
+}
 export function prepareOmcLaunchConfigDir(baseConfigDir = getClaudeConfigDir()) {
     const companionPath = join(baseConfigDir, 'CLAUDE-omc.md');
     if (!hasOmcMarkers(companionPath)) {
@@ -75,6 +97,7 @@ export function prepareOmcLaunchConfigDir(baseConfigDir = getClaudeConfigDir()) 
     if (preservedClaudeJson) {
         writeFileSync(runtimeClaudeJsonPath, preservedClaudeJson);
     }
+    refreshRuntimeClaudeJsonMcpServers(baseConfigDir, runtimeClaudeJsonPath);
     copyFileSync(companionPath, join(runtimeConfigDir, 'CLAUDE.md'));
     for (const entry of [
         'agents',
