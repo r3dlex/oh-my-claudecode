@@ -10,6 +10,7 @@ import { resolvePluginDirArg } from '../lib/plugin-dir.js';
 import { stripRetiredTeamMcpServers } from '../installer/mcp-registry.js';
 import { getClaudeConfigDir } from '../utils/config-dir.js';
 import { resolveLaunchPolicy, buildTmuxSessionName, buildTmuxShellCommand, buildTmuxShellCommandWithEnv, isNativeWindowsShell, wrapWithLoginShell, isClaudeAvailable, isTmuxAvailable, quoteShellArg, tmuxExec, } from './tmux-utils.js';
+import { configureTmuxClipboardForCurrentSession, configureTmuxClipboardForSession } from './tmux-clipboard.js';
 import { OMC_PLUGIN_ROOT_ENV } from '../lib/env-vars.js';
 import { OMC_CONFIG_FILE_REL } from '../lib/paths.js';
 // Flag mapping
@@ -450,7 +451,11 @@ export function runClaude(cwd, args, sessionId) {
  * Launches Claude in current pane
  */
 function runClaudeInsideTmux(cwd, args) {
-    // Enable mouse scrolling in the current tmux session (non-fatal if it fails)
+    // Enable OSC 52 clipboard forwarding and mouse scrolling in the current tmux session (non-fatal if unsupported).
+    try {
+        configureTmuxClipboardForCurrentSession({ stdio: 'ignore' });
+    }
+    catch { /* non-fatal — user's tmux may not support these options */ }
     try {
         tmuxExec(['set-option', 'mouse', 'on'], { stdio: 'ignore' });
     }
@@ -537,6 +542,12 @@ function runClaudeOutsideTmux(cwd, args, _sessionId, options = {}) {
         }
         runClaudeDirect(cwd, args);
         return;
+    }
+    try {
+        configureTmuxClipboardForSession(sessionName, { stripTmux: true, stdio: 'ignore' });
+    }
+    catch {
+        /* non-fatal — user's tmux may not support these options */
     }
     try {
         tmuxExec(['set-option', '-t', sessionName, 'mouse', 'on'], { stripTmux: true, stdio: 'ignore' });

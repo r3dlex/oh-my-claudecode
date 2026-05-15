@@ -329,7 +329,7 @@ describe('runClaude outside-tmux — mouse scrolling (issue #890)', () => {
     runClaude('/tmp', [], 'sid');
 
     const tmuxCalls = vi.mocked(tmuxExec).mock.calls;
-    const tmuxCall = tmuxCalls.find(([args]) => args[0] === 'set-option');
+    const tmuxCall = tmuxCalls.find(([args]) => args[0] === 'set-option' && args.includes('mouse'));
     expect(tmuxCall).toBeDefined();
 
     const tmuxArgs = tmuxCall![0];
@@ -357,11 +357,27 @@ describe('runClaude outside-tmux — mouse scrolling (issue #890)', () => {
     runClaude('/tmp', [], 'sid');
 
     const tmuxCalls = vi.mocked(tmuxExec).mock.calls.map(([args]) => args);
-    const mouseIdx = tmuxCalls.findIndex((args) => args[0] === 'set-option');
+    const mouseIdx = tmuxCalls.findIndex((args) => args[0] === 'set-option' && args.includes('mouse'));
     const attachIdx = tmuxCalls.findIndex((args) => args[0] === 'attach-session');
     expect(mouseIdx).toBeGreaterThanOrEqual(0);
     expect(attachIdx).toBeGreaterThanOrEqual(0);
     expect(mouseIdx).toBeLessThan(attachIdx);
+  });
+
+
+  it('applies session-scoped OSC 52 clipboard options before attach-session', () => {
+    runClaude('/tmp', [], 'sid');
+
+    const tmuxCalls = vi.mocked(tmuxExec).mock.calls.map(([args]) => args);
+    expect(tmuxCalls).toContainEqual(['set-option', '-t', 'test-session', 'set-clipboard', 'on']);
+    expect(tmuxCalls).toContainEqual(['show-options', '-t', 'test-session', '-v', 'terminal-features']);
+    expect(tmuxCalls).toContainEqual(['set-option', '-at', 'test-session', 'terminal-features', ',*:clipboard']);
+    expect(tmuxCalls.find((args) => args.includes('set-clipboard'))).not.toContain('-g');
+
+    const clipboardIdx = tmuxCalls.findIndex((args) => args.includes('set-clipboard'));
+    const attachIdx = tmuxCalls.findIndex((args) => args[0] === 'attach-session');
+    expect(clipboardIdx).toBeGreaterThanOrEqual(0);
+    expect(attachIdx).toBeGreaterThan(clipboardIdx);
   });
 
   it('preserves a valid detached session when attach-session is interrupted', () => {
@@ -377,6 +393,9 @@ describe('runClaude outside-tmux — mouse scrolling (issue #890)', () => {
     const tmuxCalls = vi.mocked(tmuxExec).mock.calls.map(([args]) => args);
     expect(tmuxCalls.map((args) => args[0])).toEqual([
       'new-session',
+      'set-option',
+      'show-options',
+      'set-option',
       'set-option',
       'attach-session',
       'has-session',
@@ -423,8 +442,8 @@ describe('runClaude inside-tmux — mouse configuration (issue #890)', () => {
 
     // tmuxExec should have been called for mouse config
     const tmuxCalls = vi.mocked(tmuxExec).mock.calls;
-    expect(tmuxCalls.length).toBeGreaterThanOrEqual(1);
-    expect(tmuxCalls[0][0]).toEqual(['set-option', 'mouse', 'on']);
+    const mouseCall = tmuxCalls.find(([args]) => args[0] === 'set-option' && args.includes('mouse'));
+    expect(mouseCall?.[0]).toEqual(['set-option', 'mouse', 'on']);
 
     // execFileSync should have been called for claude
     const claudeCalls = vi.mocked(execFileSync).mock.calls;

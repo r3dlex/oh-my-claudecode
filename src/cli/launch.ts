@@ -32,6 +32,7 @@ import {
   quoteShellArg,
   tmuxExec,
 } from './tmux-utils.js';
+import { configureTmuxClipboardForCurrentSession, configureTmuxClipboardForSession } from './tmux-clipboard.js';
 import { OMC_PLUGIN_ROOT_ENV } from '../lib/env-vars.js';
 import { OMC_CONFIG_FILE_REL } from '../lib/paths.js';
 
@@ -507,7 +508,11 @@ export function runClaude(cwd: string, args: string[], sessionId: string): void 
  * Launches Claude in current pane
  */
 function runClaudeInsideTmux(cwd: string, args: string[]): void {
-  // Enable mouse scrolling in the current tmux session (non-fatal if it fails)
+  // Enable OSC 52 clipboard forwarding and mouse scrolling in the current tmux session (non-fatal if unsupported).
+  try {
+    configureTmuxClipboardForCurrentSession({ stdio: 'ignore' });
+  } catch { /* non-fatal — user's tmux may not support these options */ }
+
   try {
     tmuxExec(['set-option', 'mouse', 'on'], { stdio: 'ignore' });
   } catch { /* non-fatal — user's tmux may not support these options */ }
@@ -603,6 +608,12 @@ function runClaudeOutsideTmux(
     }
     runClaudeDirect(cwd, args);
     return;
+  }
+
+  try {
+    configureTmuxClipboardForSession(sessionName, { stripTmux: true, stdio: 'ignore' });
+  } catch {
+    /* non-fatal — user's tmux may not support these options */
   }
 
   try {
