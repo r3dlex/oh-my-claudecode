@@ -12,9 +12,9 @@ Complete reference for oh-my-claudecode. For quick start, see the main [README.m
 - [Plugin directory flags](#plugin-directory-flags)
 - [CLI Commands: ask/team/session](#cli-commands-askteamsession)
 - [Legacy MCP Team Runtime Tools (Deprecated)](#legacy-mcp-team-runtime-tools-deprecated-opt-in-only)
-- [Agents (29 Total)](#agents-29-total)
+- [Agents (19 Prompt Files)](#agents-19-prompt-files)
 - [Goal Workflow UX: `/goal`, Ralph, Team, UltraQA, Ultragoal](#goal-workflow-ux-goal-ralph-team-ultraqa-ultragoal)
-- [Skills (38 Total)](#skills-38-total)
+- [Skills (36 User-Facing)](#skills-36-user-facing)
 - [Slash Commands](#slash-commands)
 - [Claude Code `/goal` Adapter Design](#claude-code-goal-adapter-design)
 - [Hooks System](#hooks-system)
@@ -501,9 +501,9 @@ Bounded handoff policy:
 2. For larger payloads, pass a short summary plus the descriptor.
 3. Keep durable content in artifact paths such as `.omc/plans/`, `.omc/prompts/`, and related artifact stores rather than embedding full bodies into queue or status records.
 
-## Agents (29 Total)
+## Agents (19 Prompt Files)
 
-Always use `oh-my-claudecode:` prefix when calling via Task tool.
+Always use `oh-my-claudecode:` prefix when calling via Task tool. OMC ships 19 base agent prompt files; tiered LOW/MEDIUM/HIGH routes are model-routing variants over those core roles.
 
 ### By Domain and Tier
 
@@ -515,7 +515,6 @@ Always use `oh-my-claudecode:` prefix when calling via Task tool.
 | **Research**       | -                       | `document-specialist` | -                   |
 | **Frontend**       | `designer-low`          | `designer`            | `designer-high`     |
 | **Docs**           | `writer`                | -                     | -                   |
-| **Visual**         | -                       | `vision`              | -                   |
 | **Planning**       | -                       | -                     | `planner`           |
 | **Critique**       | -                       | -                     | `critic`            |
 | **Pre-Planning**   | -                       | -                     | `analyst`           |
@@ -545,7 +544,6 @@ Always use `oh-my-claudecode:` prefix when calling via Task tool.
 | Complex UI system              | `designer-high`                                                        | opus   |
 | Write docs/comments            | `writer`                                                               | haiku  |
 | Research docs/APIs             | `document-specialist` (repo docs first; optional Context Hub / `chub`) | sonnet |
-| Analyze images/diagrams        | `vision`                                                               | sonnet |
 | Strategic planning             | `planner`                                                              | opus   |
 | Review/critique plan           | `critic`                                                               | opus   |
 | Pre-planning analysis          | `analyst`                                                              | opus   |
@@ -600,9 +598,9 @@ When multiple loops could apply, use this deterministic policy:
 
 For the shorter user-facing chooser, see [Mode Selection Guide](./shared/mode-selection-guide.md#goal-oriented-workflow-selection).
 
-## Skills (38 Total)
+## Skills (36 User-Facing)
 
-Includes bundled workflow, utility, domain, and compatibility skills. Runtime truth comes from the builtin skill loader scanning `skills/*/SKILL.md` and expanding aliases declared in frontmatter.
+Includes the 36 user-facing workflow, utility, domain, and compatibility skill entrypoints. Runtime truth comes from the builtin skill loader scanning 39 bundled `skills/*/SKILL.md` directories and expanding aliases declared in frontmatter.
 
 Marketplace/plugin installs compact the native plugin `skills/*/SKILL.md` files during `omc setup`: Claude Code receives concise registry descriptions for every bundled skill, while the full on-demand instructions are preserved under `skill-bodies/*/SKILL.md` and loaded by OMC when a skill is invoked. Source checkouts and standalone installs keep the full `skills/*/SKILL.md` bodies in place.
 
@@ -631,7 +629,7 @@ Marketplace/plugin installs compact the native plugin `skills/*/SKILL.md` files 
 | `omc-setup`               | One-time setup wizard                                            | `/oh-my-claudecode:omc-setup`               |
 | `omc-teams`               | Spawn `claude`/`codex`/`gemini` tmux workers for parallel execution | `/oh-my-claudecode:omc-teams`             |
 | `project-session-manager` | Manage isolated dev environments (git worktrees + tmux)          | `/oh-my-claudecode:project-session-manager` |
-| `psm` | **Deprecated** compatibility alias for `project-session-manager` | `/oh-my-claudecode:psm` |
+| `psm`                     | **Deprecated** compatibility alias for `project-session-manager` | `/oh-my-claudecode:psm`                     |
 | `ralph`                   | Persistence loop until verified completion                       | `/oh-my-claudecode:ralph`                   |
 | `ralplan`                 | Consensus planning alias for `/plan --consensus`                 | `/oh-my-claudecode:ralplan`                 |
 | `release`                 | Automated release workflow                                       | `/oh-my-claudecode:release`                 |
@@ -1060,7 +1058,7 @@ Use Claude Code's plugin management:
 Or manually remove the installed files:
 
 ```bash
-rm ~/.claude/agents/{architect,document-specialist,explore,designer,writer,vision,critic,analyst,executor,qa-tester}.md
+rm ~/.claude/agents/{analyst,architect,code-reviewer,code-simplifier,critic,debugger,designer,document-specialist,executor,explore,git-master,planner,qa-tester,scientist,security-reviewer,test-engineer,tracer,verifier,writer}.md
 rm ~/.claude/commands/{analyze,autopilot,deepsearch,plan,review,ultrawork}.md
 ```
 

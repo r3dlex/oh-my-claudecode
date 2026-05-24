@@ -3,7 +3,7 @@
 
 # skills
 
-30 skill directories for workflow automation and specialized behaviors.
+39 bundled skill directories for workflow automation and specialized behaviors (36 user-facing skills plus compatibility/internal entries).
 
 ## Purpose
 

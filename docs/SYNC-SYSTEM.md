@@ -52,7 +52,7 @@ The script syncs these files:
 |------|-------------------|
 | `README.md` | npm version/download badges |
 | `docs/REFERENCE.md` | Version badges, version headers |
-| `.github/CLAUDE.md` | Agent count, skill count |
+| `.github/CLAUDE.md` | Agent count, bundled skill count |
 | `docs/ARCHITECTURE.md` | Version references |
 | `CHANGELOG.md` | Latest version header (verify only) |
 
@@ -60,8 +60,8 @@ The script syncs these files:
 
 Some metadata is computed, not read:
 
-- **Agent count** - Counts `.yaml`/`.yml` files in `agents/` directory
-- **Skill count** - Counts `.md` files in `skills/` directory
+- **Agent count** - Counts `.md` prompt files in `agents/` directory
+- **Skill count** - Counts top-level directories in `skills/` (39 bundled directories; 36 user-facing entrypoints are advertised publicly)
 
 This ensures documentation always reflects current state.
 
@@ -80,8 +80,8 @@ Syncs all files. Output:
 
 Version: 3.5.0
 Package: oh-my-claudecode
-Agents: 32
-Skills: 45
+Agents: 19
+Skills: 39
 
 ✓ README.md
   - npm version badge
@@ -92,7 +92,7 @@ Skills: 45
 
 ✓ .github/CLAUDE.md
   - Agent count
-  - Slash command count
+  - Bundled skill count
 
 ✅ Successfully synced 3 file(s)!
 ```

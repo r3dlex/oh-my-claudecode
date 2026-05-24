@@ -3,13 +3,13 @@
 
 # agents
 
-18 specialized AI agent definitions with 3-tier model routing for optimal cost and performance.
+19 specialized AI agent definitions with 3-tier model routing for optimal cost and performance.
 
 ## Purpose
 
 This directory defines all agents available in oh-my-claudecode:
 
-- **18 base agents** with default model assignments
+- **19 base agents** with default model assignments
 - **Tiered variants** (LOW/MEDIUM/HIGH) for smart routing
 - Prompts loaded dynamically from `/agents/*.md` files
 - Tools assigned based on agent specialization
@@ -25,12 +25,12 @@ This directory defines all agents available in oh-my-claudecode:
 | `designer.ts` | UI/UX specialist (Sonnet) |
 | `document-specialist.ts` | Documentation & reference lookup (Sonnet) |
 | `writer.ts` | Technical documentation (Haiku) |
-| `vision.ts` | Visual/image analysis (Sonnet) |
 | `critic.ts` | Critical plan review (Opus) |
 | `analyst.ts` | Pre-planning analysis (Opus) |
 | `planner.ts` | Strategic planning (Opus) |
 | `qa-tester.ts` | CLI/service testing with tmux (Sonnet) |
 | `scientist.ts` | Data analysis & hypothesis testing (Sonnet) |
+| `definitions.ts` registry-only roles | `debugger`, `verifier`, `security-reviewer`, `code-reviewer`, `test-engineer`, `git-master`, `code-simplifier`, and `tracer` prompts are loaded from `/agents/*.md` |
 | `index.ts` | Exports all agents and utilities |
 
 ## For AI Agents
@@ -42,7 +42,7 @@ This directory defines all agents available in oh-my-claudecode:
 The main registry is in `definitions.ts`:
 
 ```typescript
-// Get all 18 agents
+// Get all 19 agents
 const agents = getAgentDefinitions();
 
 // Each agent has:
@@ -73,7 +73,6 @@ const agents = getAgentDefinitions();
 | Design systems | `designer-high` | opus | Read, Glob, Grep, Edit, Write, Bash |
 | API documentation | `document-specialist` | sonnet | Read, Glob, Grep, WebSearch, WebFetch |
 | README/docs | `writer` | haiku | Read, Glob, Grep, Edit, Write |
-| Image analysis | `vision` | sonnet | Read, Glob, Grep |
 | Plan review | `critic` | opus | Read, Glob, Grep |
 | Requirements analysis | `analyst` | opus | Read, Glob, Grep, WebSearch |
 | Strategic planning | `planner` | opus | Read, Glob, Grep, WebSearch |
@@ -86,6 +85,9 @@ const agents = getAgentDefinitions();
 | TDD workflow | `test-engineer` | sonnet | Read, Grep, Glob, Edit, Write, Bash |
 | Test suggestions | `test-engineer` (model=haiku) | haiku | Read, Grep, Glob, Bash |
 | Code review | `code-reviewer` | opus | Read, Grep, Glob, Bash |
+| Verification | `verifier` | sonnet | Read, Grep, Glob, Bash |
+| Git workflow | `git-master` | sonnet | Read, Grep, Glob, Bash |
+| Tracing | `tracer` | sonnet | Read, Grep, Glob, Bash |
 
 #### Creating a New Agent
 
@@ -234,13 +236,15 @@ None - pure TypeScript definitions.
 | Research | document-specialist | External documentation |
 | Frontend | designer, designer-low, designer-high | UI/UX work |
 | Documentation | writer | Technical writing |
-| Visual | vision | Image/screenshot analysis |
 | Planning | planner, analyst, critic | Strategic planning |
-| Testing | qa-tester | Interactive testing |
+| Testing | qa-tester, verifier | Interactive testing and completion evidence |
 | Security | security-reviewer, security-reviewer-low | Security audits |
 | TDD | test-engineer | Test-driven development |
-| Review | code-reviewer | Code quality + style + performance |
+| Review | code-reviewer, code-simplifier | Code quality + style + performance + simplification |
 | Data | scientist, scientist-high | Data analysis |
+| Build | debugger | Build/toolchain failure diagnosis |
+| Git | git-master | Commit and branch workflow |
+| Tracing | tracer | Evidence-driven causal tracing |
 
 <!-- MANUAL:
 - Legacy alias wording was removed from active prompts to keep agent naming consistent with current conventions.

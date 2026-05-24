@@ -56,6 +56,7 @@
     "./skills/wiki/",
     "./skills/writer-memory/"
   ],
+  "agents": "./agents/",
   "mcpServers": "./.mcp.json",
   "commands": "./commands/"
 }
