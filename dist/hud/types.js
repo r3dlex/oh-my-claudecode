@@ -4,14 +4,72 @@
  * Type definitions for the HUD state, configuration, and rendering.
  */
 import { DEFAULT_MISSION_BOARD_CONFIG } from './mission-board.js';
+export const DEFAULT_HUD_LABELS = {
+    context: 'ctx',
+    tokens: 'tok',
+    tool: 'T',
+    agent: 'A',
+    skill: 'S',
+    ralph: 'ralph',
+    background: 'bg',
+    thinking: 'thinking',
+    model: 'Model',
+    staged: '+',
+    modified: '!',
+    untracked: '?',
+    ahead: '⇡',
+    behind: '⇣',
+};
+export const HUD_LOCALE_LABELS = {
+    en: DEFAULT_HUD_LABELS,
+    'zh-CN': {
+        context: '上下文',
+        tokens: '令牌',
+        tool: '工具',
+        agent: '智能体',
+        skill: '技能',
+        ralph: '循环',
+        background: '后台',
+        thinking: '思考',
+        model: '模型',
+        staged: '已暂存',
+        modified: '已修改',
+        untracked: '未跟踪',
+        ahead: '领先',
+        behind: '落后',
+    },
+};
+export const HUD_LABEL_KEYS = Object.freeze(Object.keys(DEFAULT_HUD_LABELS));
+export function isHudLocale(value) {
+    return value === 'en' || value === 'zh-CN';
+}
+export function sanitizeHudLabels(labels) {
+    if (!labels || typeof labels !== 'object')
+        return {};
+    const sanitized = {};
+    for (const key of HUD_LABEL_KEYS) {
+        const value = labels[key];
+        if (typeof value === 'string' && value.length > 0) {
+            sanitized[key] = value;
+        }
+    }
+    return sanitized;
+}
+export function resolveHudLabels(locale, labels) {
+    return {
+        ...DEFAULT_HUD_LABELS,
+        ...(isHudLocale(locale) ? HUD_LOCALE_LABELS[locale] : {}),
+        ...sanitizeHudLabels(labels),
+    };
+}
 /**
  * Default element order matching the current hardcoded order in render.ts.
  * Used as fallback when no layout is configured.
  */
 export const DEFAULT_ELEMENT_ORDER = {
-    line1: ['hostname', 'cwd', 'gitRepo', 'gitBranch', 'gitStatus', 'model', 'apiKeySource', 'profile'],
+    line1: ['hostname', 'cwd', 'gitRepo', 'gitBranch', 'gitStatus', 'apiKeySource', 'profile'],
     main: [
-        'omcLabel', 'rateLimits', 'customBuckets', 'permission', 'thinking',
+        'omcLabel', 'model', 'enterpriseCost', 'rateLimits', 'customBuckets', 'permission', 'thinking',
         'promptTime', 'session', 'tokens', 'ralph', 'autopilot', 'prd',
         'skills', 'lastSkill', 'contextBar', 'agents', 'background',
         'callCounts', 'lastTool', 'sessionSummary',
@@ -21,6 +79,8 @@ export const DEFAULT_ELEMENT_ORDER = {
 export const DEFAULT_HUD_USAGE_POLL_INTERVAL_MS = 90 * 1000;
 export const DEFAULT_HUD_CONFIG = {
     preset: 'focused',
+    locale: 'en',
+    labels: DEFAULT_HUD_LABELS,
     elements: {
         cwd: false, // Disabled by default for backward compatibility
         cwdFormat: 'relative',
@@ -29,8 +89,8 @@ export const DEFAULT_HUD_CONFIG = {
         gitBranch: false, // Disabled by default for backward compatibility
         gitStatus: false, // Disabled by default for backward compatibility
         gitInfoPosition: 'above', // Git info above main HUD line (backward compatible)
-        model: false, // Disabled by default for backward compatibility
-        modelFormat: 'short', // Short names by default for backward compatibility
+        model: true, // Show only when Claude Code statusline stdin provides a model
+        modelFormat: 'versioned', // Preserve model version by default
         omcLabel: true,
         rateLimits: true, // Show rate limits by default
         ralph: true,
@@ -88,8 +148,8 @@ export const PRESET_CONFIGS = {
         gitBranch: false,
         gitStatus: false,
         gitInfoPosition: 'above',
-        model: false,
-        modelFormat: 'short',
+        model: true,
+        modelFormat: 'versioned',
         omcLabel: true,
         rateLimits: true,
         ralph: true,
@@ -130,8 +190,8 @@ export const PRESET_CONFIGS = {
         gitBranch: true,
         gitStatus: true,
         gitInfoPosition: 'above',
-        model: false,
-        modelFormat: 'short',
+        model: true,
+        modelFormat: 'versioned',
         omcLabel: true,
         rateLimits: true,
         ralph: true,
@@ -172,8 +232,8 @@ export const PRESET_CONFIGS = {
         gitBranch: true,
         gitStatus: true,
         gitInfoPosition: 'above',
-        model: false,
-        modelFormat: 'short',
+        model: true,
+        modelFormat: 'versioned',
         omcLabel: true,
         rateLimits: true,
         ralph: true,
@@ -214,8 +274,8 @@ export const PRESET_CONFIGS = {
         gitBranch: true,
         gitStatus: false,
         gitInfoPosition: 'above',
-        model: false,
-        modelFormat: 'short',
+        model: true,
+        modelFormat: 'versioned',
         omcLabel: true,
         rateLimits: false,
         ralph: true,
@@ -256,8 +316,8 @@ export const PRESET_CONFIGS = {
         gitBranch: true,
         gitStatus: true,
         gitInfoPosition: 'above',
-        model: false,
-        modelFormat: 'short',
+        model: true,
+        modelFormat: 'versioned',
         omcLabel: true,
         rateLimits: true,
         ralph: true,

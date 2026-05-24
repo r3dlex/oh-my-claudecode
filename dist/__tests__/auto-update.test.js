@@ -28,7 +28,7 @@ import { execSync, execFileSync } from 'child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { install, isProjectScopedPlugin, checkNodeVersion, CLAUDE_CONFIG_DIR } from '../installer/index.js';
-import { reconcileUpdateRuntime, performUpdate, shouldBlockStandaloneUpdateInCurrentSession, syncPluginCache, } from '../features/auto-update.js';
+import { reconcileUpdateRuntime, performUpdate, shouldBlockStandaloneUpdateInCurrentSession, syncPluginCache, fetchLatestRelease, } from '../features/auto-update.js';
 const mockedExecSync = vi.mocked(execSync);
 const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedCpSync = vi.mocked(cpSync);
@@ -40,6 +40,8 @@ const mockedInstall = vi.mocked(install);
 const mockedIsProjectScopedPlugin = vi.mocked(isProjectScopedPlugin);
 const mockedCheckNodeVersion = vi.mocked(checkNodeVersion);
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+const originalGhToken = process.env.GH_TOKEN;
+const originalGithubToken = process.env.GITHUB_TOKEN;
 function mockPlatform(platform) {
     Object.defineProperty(process, 'platform', {
         configurable: true,
@@ -49,6 +51,8 @@ function mockPlatform(platform) {
 describe('auto-update reconciliation', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        delete process.env.GH_TOKEN;
+        delete process.env.GITHUB_TOKEN;
         mockedCpSync.mockImplementation(() => undefined);
         mockedExistsSync.mockReturnValue(true);
         mockedIsProjectScopedPlugin.mockReturnValue(false);
@@ -82,9 +86,122 @@ describe('auto-update reconciliation', () => {
         vi.unstubAllGlobals();
         delete process.env.OMC_UPDATE_RECONCILE;
         delete process.env.CLAUDE_PLUGIN_ROOT;
+        if (originalGhToken === undefined) {
+            delete process.env.GH_TOKEN;
+        }
+        else {
+            process.env.GH_TOKEN = originalGhToken;
+        }
+        if (originalGithubToken === undefined) {
+            delete process.env.GITHUB_TOKEN;
+        }
+        else {
+            process.env.GITHUB_TOKEN = originalGithubToken;
+        }
         if (originalPlatformDescriptor) {
             Object.defineProperty(process, 'platform', originalPlatformDescriptor);
         }
+    });
+    it('fetches latest release without Authorization when no GitHub token is configured', async () => {
+        const release = {
+            tag_name: 'v4.1.5',
+            name: '4.1.5',
+            published_at: '2026-02-09T00:00:00.000Z',
+            html_url: 'https://example.com/release',
+            body: 'notes',
+            prerelease: false,
+            draft: false,
+        };
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => release,
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        await expect(fetchLatestRelease()).resolves.toEqual(release);
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/releases/latest'), {
+            headers: {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'oh-my-claudecode-updater',
+            },
+        });
+    });
+    it('uses GITHUB_TOKEN for latest release requests when GH_TOKEN is absent', async () => {
+        process.env.GITHUB_TOKEN = 'github-token-value';
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        await fetchLatestRelease();
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/releases/latest'), expect.objectContaining({
+            headers: expect.objectContaining({
+                Authorization: 'Bearer github-token-value',
+            }),
+        }));
+    });
+    it('prefers GH_TOKEN over GITHUB_TOKEN for latest release requests', async () => {
+        process.env.GH_TOKEN = 'gh-token-value';
+        process.env.GITHUB_TOKEN = 'github-token-value';
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        await fetchLatestRelease();
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('/releases/latest'), expect.objectContaining({
+            headers: expect.objectContaining({
+                Authorization: 'Bearer gh-token-value',
+            }),
+        }));
+    });
+    it('adds a helpful rate-limit hint for unauthenticated 403 release responses', async () => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            headers: new Headers({
+                'x-ratelimit-remaining': '0',
+                'x-ratelimit-reset': '1893456000',
+            }),
+            text: async () => JSON.stringify({ message: 'API rate limit exceeded' }),
+        }));
+        await expect(fetchLatestRelease()).rejects.toThrow(/GitHub API rate limit exceeded.*Set GH_TOKEN or GITHUB_TOKEN.*2030-01-01T00:00:00.000Z/);
+    });
+    it('does not leak a configured token in token-authenticated 403 errors', async () => {
+        process.env.GH_TOKEN = 'super-secret-token';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: false,
+            status: 403,
+            statusText: 'Forbidden',
+            headers: new Headers({
+                'x-ratelimit-remaining': '0',
+            }),
+            text: async () => JSON.stringify({ message: 'API rate limit exceeded' }),
+        }));
+        await expect(fetchLatestRelease()).rejects.toThrow(/configured GitHub token appears to be rate limited/);
+        await expect(fetchLatestRelease()).rejects.not.toThrow(/super-secret-token/);
     });
     it('reconciles runtime state without re-injecting settings hooks', () => {
         mockedExistsSync.mockReturnValue(false);
@@ -399,6 +516,287 @@ describe('auto-update reconciliation', () => {
         expect(result.success).toBe(true);
         expect(mockedExecSync).toHaveBeenCalledWith('npm install -g oh-my-claude-sisyphus@latest', expect.any(Object));
     });
+    it('restores global Claude Code when npm removes an existing global install during update', async () => {
+        const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
+        process.env.OMC_UPDATE_RECONCILE = '1';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        }));
+        let claudeCodePackageCheckCount = 0;
+        mockedExistsSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json') {
+                claudeCodePackageCheckCount += 1;
+                return claudeCodePackageCheckCount === 1 || claudeCodePackageCheckCount === 3;
+            }
+            if (normalized.endsWith('/plugins/marketplaces/omc')) {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/cache/omc/oh-my-claudecode')) {
+                return false;
+            }
+            return true;
+        });
+        mockedReadFileSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json') {
+                return JSON.stringify({ version: '1.2.3' });
+            }
+            if (normalized.includes('.omc-version.json')) {
+                return JSON.stringify({
+                    version: '4.1.5',
+                    installedAt: '2026-02-09T00:00:00.000Z',
+                    installMethod: 'npm',
+                });
+            }
+            return '';
+        });
+        mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                return '/usr/lib/node_modules\n';
+            }
+            if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
+                return '';
+            }
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+        mockedExecFileSync.mockImplementation((command, args) => {
+            if (command === 'npm' && args?.join(' ') === 'install -g @anthropic-ai/claude-code@1.2.3') {
+                return '';
+            }
+            throw new Error(`Unexpected execFileSync command: ${command} ${args?.join(' ') ?? ''}`);
+        });
+        try {
+            const result = await performUpdate({ verbose: true });
+            expect(result.success).toBe(true);
+            expect(mockedExecFileSync).toHaveBeenCalledWith('npm', ['install', '-g', '@anthropic-ai/claude-code@1.2.3'], expect.any(Object));
+            expect(consoleLogSpy).toHaveBeenCalledWith('[omc update] Restoring global @anthropic-ai/claude-code@1.2.3 after npm update...');
+            expect(consoleLogSpy).toHaveBeenCalledWith('[omc update] Restored global @anthropic-ai/claude-code');
+        }
+        finally {
+            consoleLogSpy.mockRestore();
+        }
+    });
+    it('does not install global Claude Code when it was absent before update', async () => {
+        process.env.OMC_UPDATE_RECONCILE = '1';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        }));
+        mockedExistsSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json') {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/marketplaces/omc')) {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/cache/omc/oh-my-claudecode')) {
+                return false;
+            }
+            return true;
+        });
+        mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                return '/usr/lib/node_modules\n';
+            }
+            if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
+                return '';
+            }
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+        const result = await performUpdate({ verbose: false });
+        expect(result.success).toBe(true);
+        expect(mockedExecSync).not.toHaveBeenCalledWith('npm install -g @anthropic-ai/claude-code@latest', expect.any(Object));
+        expect(mockedExecFileSync).not.toHaveBeenCalledWith('npm', ['install', '-g', expect.stringContaining('@anthropic-ai/claude-code@')], expect.any(Object));
+    });
+    it('does not install global Claude Code when pre-update detection is unknown', async () => {
+        process.env.OMC_UPDATE_RECONCILE = '1';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        }));
+        mockedExistsSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized.endsWith('/plugins/marketplaces/omc')) {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/cache/omc/oh-my-claudecode')) {
+                return false;
+            }
+            return true;
+        });
+        let npmRootCalls = 0;
+        mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                npmRootCalls += 1;
+                if (npmRootCalls === 1) {
+                    throw new Error('cannot inspect global root');
+                }
+                return '/usr/lib/node_modules\n';
+            }
+            if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
+                return '';
+            }
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+        const result = await performUpdate({ verbose: false });
+        expect(result.success).toBe(true);
+        expect(mockedExecFileSync).not.toHaveBeenCalledWith('npm', ['install', '-g', expect.stringContaining('@anthropic-ai/claude-code@')], expect.any(Object));
+    });
+    it('restores global Claude Code when post-update detection is unknown after a known pre-update install', async () => {
+        process.env.OMC_UPDATE_RECONCILE = '1';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        }));
+        mockedExistsSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json') {
+                return true;
+            }
+            if (normalized.endsWith('/plugins/marketplaces/omc')) {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/cache/omc/oh-my-claudecode')) {
+                return false;
+            }
+            return true;
+        });
+        let claudeCodeReadCount = 0;
+        mockedReadFileSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === '/usr/lib/node_modules/@anthropic-ai/claude-code/package.json') {
+                claudeCodeReadCount += 1;
+                if (claudeCodeReadCount === 2) {
+                    throw new Error('cannot read package after update');
+                }
+                return JSON.stringify({ version: '1.2.3' });
+            }
+            if (normalized.includes('.omc-version.json')) {
+                return JSON.stringify({
+                    version: '4.1.5',
+                    installedAt: '2026-02-09T00:00:00.000Z',
+                    installMethod: 'npm',
+                });
+            }
+            return '';
+        });
+        mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                return '/usr/lib/node_modules\n';
+            }
+            if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
+                return '';
+            }
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+        mockedExecFileSync.mockImplementation((command, args) => {
+            if (command === 'npm' && args?.join(' ') === 'install -g @anthropic-ai/claude-code@1.2.3') {
+                return '';
+            }
+            throw new Error(`Unexpected execFileSync command: ${command} ${args?.join(' ') ?? ''}`);
+        });
+        const result = await performUpdate({ verbose: false });
+        expect(result.success).toBe(true);
+        expect(mockedExecFileSync).toHaveBeenCalledWith('npm', ['install', '-g', '@anthropic-ai/claude-code@1.2.3'], expect.any(Object));
+    });
+    it('uses Windows-safe npm options when restoring global Claude Code', async () => {
+        mockPlatform('win32');
+        process.env.OMC_UPDATE_RECONCILE = '1';
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({
+                tag_name: 'v4.1.5',
+                name: '4.1.5',
+                published_at: '2026-02-09T00:00:00.000Z',
+                html_url: 'https://example.com/release',
+                body: 'notes',
+                prerelease: false,
+                draft: false,
+            }),
+        }));
+        let claudeCodePackageCheckCount = 0;
+        mockedExistsSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === 'C:/Users/bellman/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/package.json') {
+                claudeCodePackageCheckCount += 1;
+                return claudeCodePackageCheckCount === 1 || claudeCodePackageCheckCount === 3;
+            }
+            if (normalized.endsWith('/plugins/marketplaces/omc')) {
+                return false;
+            }
+            if (normalized.endsWith('/plugins/cache/omc/oh-my-claudecode')) {
+                return false;
+            }
+            return true;
+        });
+        mockedReadFileSync.mockImplementation((path) => {
+            const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === 'C:/Users/bellman/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/package.json') {
+                return JSON.stringify({ version: '1.2.3' });
+            }
+            if (normalized.includes('.omc-version.json')) {
+                return JSON.stringify({
+                    version: '4.1.5',
+                    installedAt: '2026-02-09T00:00:00.000Z',
+                    installMethod: 'npm',
+                });
+            }
+            return '';
+        });
+        mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                return 'C:\\Users\\bellman\\AppData\\Roaming\\npm\\node_modules\r\n';
+            }
+            if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
+                return '';
+            }
+            if (command === 'npm install -g @anthropic-ai/claude-code@1.2.3') {
+                return '';
+            }
+            throw new Error(`Unexpected execSync command: ${command}`);
+        });
+        const result = await performUpdate({ verbose: false });
+        expect(result.success).toBe(true);
+        expect(mockedExecSync).toHaveBeenCalledWith('npm install -g @anthropic-ai/claude-code@1.2.3', expect.objectContaining({
+            windowsHide: true,
+        }));
+        expect(mockedExecFileSync).not.toHaveBeenCalledWith('npm', ['install', '-g', '@anthropic-ai/claude-code@1.2.3'], expect.any(Object));
+    });
     it('runs reconciliation as part of performUpdate without plugin hook reinjection', async () => {
         // Set env var so performUpdate takes the direct reconciliation path
         // (simulates being in the re-exec'd process after npm install)
@@ -579,6 +977,9 @@ describe('auto-update reconciliation', () => {
         mockPlatform('win32');
         mockedExistsSync.mockImplementation((path) => {
             const normalized = String(path).replace(/\\/g, '/');
+            if (normalized === 'C:/Users/bellman/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/package.json') {
+                return false;
+            }
             if (normalized.endsWith('/plugins/marketplaces/omc')) {
                 return false;
             }
@@ -597,6 +998,9 @@ describe('auto-update reconciliation', () => {
             }),
         }));
         mockedExecSync.mockImplementation((command) => {
+            if (command === 'npm root -g') {
+                return 'C:\\Users\\bellman\\AppData\\Roaming\\npm\\node_modules\r\n';
+            }
             if (command === 'npm install -g oh-my-claude-sisyphus@latest') {
                 return '';
             }

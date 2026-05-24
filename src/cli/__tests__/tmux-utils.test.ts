@@ -24,6 +24,7 @@ import {
   buildTmuxShellCommand,
   buildTmuxShellCommandWithEnv,
   createHudWatchPane,
+  isClaudeAvailable,
   killTmuxPane,
   listHudWatchPaneIdsInCurrentWindow,
   resolveLaunchPolicy,
@@ -98,6 +99,39 @@ describe('resolveLaunchPolicy', () => {
     expect(resolveLaunchPolicy({})).toBe('direct');
   });
 
+  it('returns "outside-tmux" with requireTmux=true even when CMUX_SURFACE_ID is set', () => {
+    mockedExecFileSync.mockReturnValue('tmux 3.6a' as any);
+    expect(resolveLaunchPolicy(
+      { CMUX_SURFACE_ID: 'some-id' },
+      [],
+      { requireTmux: true },
+    )).toBe('outside-tmux');
+  });
+
+  it('returns "direct" with requireTmux=true when tmux is not available', () => {
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('tmux not found');
+    });
+    expect(resolveLaunchPolicy({}, [], { requireTmux: true })).toBe('direct');
+  });
+
+  it('still respects --print over requireTmux=true', () => {
+    mockedExecFileSync.mockReturnValue('tmux 3.6a' as any);
+    expect(resolveLaunchPolicy(
+      { CMUX_SURFACE_ID: 'some-id' },
+      ['--print'],
+      { requireTmux: true },
+    )).toBe('direct');
+  });
+
+  it('still respects TMUX env (inside-tmux) over requireTmux=true', () => {
+    expect(resolveLaunchPolicy(
+      { TMUX: '/tmp/tmux-0/default,1,0', CMUX_SURFACE_ID: 'some-id' },
+      [],
+      { requireTmux: true },
+    )).toBe('inside-tmux');
+  });
+
   it('detects tmux.cmd via COMSPEC on win32', () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
@@ -128,6 +162,22 @@ describe('resolveLaunchPolicy', () => {
       ['/d', '/s', '/c', '"C:\\Program Files\\psmux\\tmux.cmd" -V'],
       { timeout: 5000 }
     );
+
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
+  });
+});
+
+describe('isClaudeAvailable', () => {
+  it('uses shell:true on win32 so npm .cmd wrappers resolve', () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    mockedExecFileSync.mockReturnValue(Buffer.from('2.1.116'));
+
+    expect(isClaudeAvailable()).toBe(true);
+    expect(mockedExecFileSync).toHaveBeenCalledWith('claude', ['--version'], {
+      stdio: 'ignore',
+      shell: true,
+    });
 
     Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
   });
@@ -292,10 +342,10 @@ describe('wrapWithLoginShell', () => {
     expect(result).toMatch(/^exec /);
   });
 
-  it('defaults to /bin/bash when $SHELL is not set', () => {
+  it('defaults to /bin/sh when $SHELL is not set', () => {
     vi.stubEnv('SHELL', '');
     const result = wrapWithLoginShell('codex');
-    expect(result).toContain('/bin/bash');
+    expect(result).toContain('/bin/sh');
     expect(result).toContain('-lc');
   });
 

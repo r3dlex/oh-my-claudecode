@@ -15,7 +15,7 @@ export interface CliAgentContract {
   parseOutput(rawOutput: string): string;
   /** Whether this agent supports a prompt/headless mode that bypasses TUI input */
   supportsPromptMode?: boolean;
-  /** CLI flag for prompt mode (e.g., '-i' for gemini) */
+  /** CLI flag for prompt mode (e.g., '-p' for gemini) */
   promptModeFlag?: string;
 }
 
@@ -157,6 +157,17 @@ export const _testInternals = {
   getTrustedPrefixes,
 };
 
+/**
+ * Detect parent launch env for Claude Code API-key auth.
+ *
+ * Claude Code's `--dangerously-skip-permissions` only bypasses permission
+ * prompts. When an API key is present, `--bare` is needed to avoid the
+ * interactive OAuth/session login path for team worker panes.
+ */
+export function shouldUseClaudeBareMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return typeof env.ANTHROPIC_API_KEY === 'string' && env.ANTHROPIC_API_KEY.trim().length > 0;
+}
+
 const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
   claude: {
     agentType: 'claude',
@@ -164,6 +175,9 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     installInstructions: 'Install Claude CLI: https://claude.ai/download',
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--dangerously-skip-permissions'];
+      if (shouldUseClaudeBareMode() && !extraFlags.includes('--bare')) {
+        args.push('--bare');
+      }
       if (model) {
         // Provider-specific model IDs (Bedrock, Vertex) must be passed as-is.
         // Normalizing them to aliases like "sonnet" causes Claude Code to expand
@@ -182,9 +196,10 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     agentType: 'codex',
     binary: 'codex',
     installInstructions: 'Install Codex CLI: npm install -g @openai/codex',
-    supportsPromptMode: true,
-    // Codex accepts prompt as a positional argument (no flag needed):
-    //   codex [OPTIONS] [PROMPT]
+    // Team workers must be persistent interactive panes. Do not use `codex exec`
+    // or positional prompt mode here; runtime dispatch writes inbox.md and nudges
+    // the live Codex TUI with `codex` as the worker process.
+    supportsPromptMode: false,
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--dangerously-bypass-approvals-and-sandbox'];
       if (model) args.push('--model', model);
@@ -214,7 +229,7 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     binary: 'gemini',
     installInstructions: 'Install Gemini CLI: npm install -g @google/gemini-cli',
     supportsPromptMode: true,
-    promptModeFlag: '-i',
+    promptModeFlag: '-p',
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--approval-mode', 'yolo'];
       if (model) args.push('--model', model);
@@ -462,7 +477,7 @@ export function getPromptModeArgs(agentType: CliAgentType, instruction: string):
   if (!contract.supportsPromptMode) {
     return [];
   }
-  // If a flag is defined (e.g. gemini's '-i'), prepend it; otherwise the
+  // If a flag is defined (e.g. gemini's '-p'), prepend it; otherwise the
   // instruction is passed as a positional argument (e.g. codex [PROMPT]).
   if (contract.promptModeFlag) {
     return [contract.promptModeFlag, instruction];

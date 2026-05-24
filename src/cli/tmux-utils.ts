@@ -200,11 +200,23 @@ export function isTmuxAvailable(): boolean {
  */
 export function isClaudeAvailable(): boolean {
   try {
-    execFileSync('claude', ['--version'], { stdio: 'ignore' });
+    execFileSync('claude', ['--version'], {
+      stdio: 'ignore',
+      shell: process.platform === 'win32',
+    });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Options for `resolveLaunchPolicy`. `requireTmux=true` makes
+ * CMUX_SURFACE_ID stop demoting to 'direct'. The caller is responsible for
+ * gating on platform/flag combinations (e.g. macOS + --madmax).
+ */
+export interface ResolveLaunchPolicyOptions {
+  requireTmux?: boolean;
 }
 
 /**
@@ -217,17 +229,18 @@ export function isClaudeAvailable(): boolean {
 export function resolveLaunchPolicy(
   env: NodeJS.ProcessEnv = process.env,
   args: string[] = [],
+  options: ResolveLaunchPolicyOptions = {},
 ): ClaudeLaunchPolicy {
   if (args.some((arg) => arg === '--print' || arg === '-p')) {
     return 'direct';
   }
   if (env.TMUX) return 'inside-tmux';
   // Terminal emulators that embed their own multiplexer (e.g. cmux, a
-  // Ghostty-based terminal) set CMUX_SURFACE_ID but not TMUX.  tmux
+  // Ghostty-based terminal) set CMUX_SURFACE_ID but not TMUX. tmux
   // attach-session fails in these environments because the host PTY is
   // not directly compatible, leaving orphaned detached sessions.
-  // Fall back to direct mode so Claude launches without tmux wrapping.
-  if (env.CMUX_SURFACE_ID) return 'direct';
+  // Demote to direct unless the caller explicitly requires tmux.
+  if (env.CMUX_SURFACE_ID && !options.requireTmux) return 'direct';
   if (!isTmuxAvailable()) {
     return 'direct';
   }
@@ -330,7 +343,7 @@ export function wrapWithLoginShell(command: string): string {
     return `${quoteForCmd(comspec)} /d /s /c ${quoteForCmd(command)}`;
   }
 
-  const shell = process.env.SHELL || '/bin/bash';
+  const shell = process.env.SHELL || '/bin/sh';
   const shellName = basename(shell).replace(/\.(exe|cmd|bat)$/i, '');
   const rcFile = process.env.HOME ? `${process.env.HOME}/.${shellName}rc` : '';
   const sourcePrefix = rcFile

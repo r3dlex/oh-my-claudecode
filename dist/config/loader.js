@@ -11,7 +11,7 @@ import { join, dirname } from "path";
 import { CANONICAL_TEAM_ROLES, KNOWN_AGENT_NAMES, } from "../shared/types.js";
 import { getConfigDir } from "../utils/paths.js";
 import { parseJsonc } from "../utils/jsonc.js";
-import { getDefaultTierModels, BUILTIN_EXTERNAL_MODEL_DEFAULTS, isNonClaudeProvider, } from "./models.js";
+import { getDefaultTierModels, BUILTIN_EXTERNAL_MODEL_DEFAULTS, shouldAutoForceInherit, } from "./models.js";
 import { normalizeDelegationRole } from "../features/delegation-routing/types.js";
 /**
  * Default configuration.
@@ -428,6 +428,12 @@ export function validateTeamConfig(config) {
                 throw new Error(`[OMC] team.ops.defaultAgentType: invalid value "${String(ops.defaultAgentType)}". Allowed: ${[...TEAM_ROLE_PROVIDERS].join(", ")}`);
             }
         }
+        if (ops.worktreeMode !== undefined) {
+            const allowed = new Set(["disabled", "off", "detached", "branch", "named"]);
+            if (typeof ops.worktreeMode !== "string" || !allowed.has(ops.worktreeMode)) {
+                throw new Error(`[OMC] team.ops.worktreeMode: invalid value "${String(ops.worktreeMode)}". Allowed: ${[...allowed].join(", ")}`);
+            }
+        }
     }
     const roleRouting = team.roleRouting;
     if (!roleRouting || typeof roleRouting !== "object")
@@ -519,7 +525,7 @@ export function loadConfig() {
     // tier names (sonnet/opus/haiku) causes 400 errors on these platforms.
     if (config.routing?.forceInherit !== true &&
         process.env.OMC_ROUTING_FORCE_INHERIT === undefined &&
-        isNonClaudeProvider()) {
+        shouldAutoForceInherit()) {
         config.routing = {
             ...config.routing,
             forceInherit: true,
@@ -536,6 +542,18 @@ const OMC_STARTUP_COMPACTABLE_SECTIONS = [
     "skills",
     "team_compositions",
 ];
+const OMC_STARTUP_GUIDANCE_MAX_CHARS = 8000;
+const OMC_CONTEXT_FILES_MAX_CHARS = 12000;
+function compactBudgetedText(text, maxChars) {
+    if (!text || maxChars <= 0)
+        return "";
+    const notice = "\n...[truncated to preserve startup context budget]";
+    if (text.length <= maxChars)
+        return text;
+    if (maxChars <= notice.length)
+        return notice.slice(0, maxChars);
+    return `${text.slice(0, maxChars - notice.length).trimEnd()}${notice}`;
+}
 function looksLikeOmcGuidance(content) {
     return (content.includes("<guidance_schema_contract>") &&
         /oh-my-(claudecode|codex)/i.test(content) &&
@@ -548,18 +566,20 @@ export function compactOmcStartupGuidance(content) {
     let compacted = content;
     let removedAny = false;
     for (const section of OMC_STARTUP_COMPACTABLE_SECTIONS) {
-        const pattern = new RegExp(`\n*<${section}>[\\s\\S]*?<\/${section}>\n*`, "g");
+        const pattern = new RegExp(`\n*<${section}>[\\s\\S]*?</${section}>\n*`, "g");
         const next = compacted.replace(pattern, "\n\n");
         removedAny = removedAny || next !== compacted;
         compacted = next;
     }
-    if (!removedAny) {
-        return content;
-    }
-    return compacted
+    const normalized = compacted
         .replace(/\n{3,}/g, "\n\n")
         .replace(/\n\n---\n\n---\n\n/g, "\n\n---\n\n")
         .trim();
+    if (normalized.length <= OMC_STARTUP_GUIDANCE_MAX_CHARS) {
+        return removedAny ? normalized : content;
+    }
+    const notice = "\n\n[OMC startup guidance truncated to preserve an 8000-character budget. Read the source file directly for the full document.]";
+    return `${normalized.slice(0, OMC_STARTUP_GUIDANCE_MAX_CHARS - notice.length).trimEnd()}${notice}`;
 }
 /**
  * Find and load AGENTS.md or CLAUDE.md files for context injection
@@ -597,16 +617,28 @@ export function findContextFiles(startDir) {
  */
 export function loadContextFromFiles(files) {
     const contexts = [];
+    let used = 0;
+    const separator = "\n\n---\n\n";
     for (const file of files) {
         try {
             const content = compactOmcStartupGuidance(readFileSync(file, "utf-8"));
-            contexts.push(`## Context from ${file}\n\n${content}`);
+            const contextBlock = `## Context from ${file}\n\n${content}`;
+            const separatorLength = contexts.length > 0 ? separator.length : 0;
+            const remainingBudget = OMC_CONTEXT_FILES_MAX_CHARS - used - separatorLength;
+            if (remainingBudget <= 0)
+                break;
+            if (contextBlock.length > remainingBudget) {
+                contexts.push(compactBudgetedText(contextBlock, remainingBudget));
+                break;
+            }
+            contexts.push(contextBlock);
+            used += separatorLength + contextBlock.length;
         }
         catch (error) {
             console.warn(`Warning: Could not read context file ${file}:`, error);
         }
     }
-    return contexts.join("\n\n---\n\n");
+    return contexts.join(separator);
 }
 /**
  * Generate JSON Schema for configuration (for editor autocomplete)

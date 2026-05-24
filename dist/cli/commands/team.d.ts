@@ -7,6 +7,7 @@
  *   omc team shutdown <team-name> [--force] Shutdown team
  *   omc team api <operation> --input '...'  Worker CLI API
  */
+import type { TeamTaskDelegationPlan } from '../../team/types.js';
 export type DecompositionStrategy = 'numbered' | 'bulleted' | 'conjunction' | 'atomic';
 export interface DecompositionPlan {
     strategy: DecompositionStrategy;
@@ -24,7 +25,7 @@ export declare function hasAtomicParallelizationSignals(task: string, _size: str
  * Resolve the effective worker count fanout limit for decomposed tasks.
  * Caps worker count to the number of discovered subtasks when decomposition produces fewer items.
  */
-export declare function resolveTeamFanoutLimit(requestedWorkerCount: number, _explicitAgentType: string | undefined, _explicitWorkerCount: number | undefined, plan: DecompositionPlan): number;
+export declare function resolveTeamFanoutLimit(requestedWorkerCount: number, _explicitAgentType: string | undefined, explicitWorkerCount: number | undefined, plan: DecompositionPlan, noDecompose?: boolean): number;
 /**
  * Decompose a task string into a structured plan.
  *
@@ -35,6 +36,7 @@ export declare function resolveTeamFanoutLimit(requestedWorkerCount: number, _ex
  * - Atomic: single task, no decomposition
  */
 export declare function splitTaskString(task: string): DecompositionPlan;
+export declare function resolveAvailableTeamName(baseName: string, cwd: string): string;
 export interface ParsedWorkerSpec {
     agentType: string;
     role?: string;
@@ -48,6 +50,9 @@ export interface ParsedTeamArgs {
     teamName: string;
     json: boolean;
     newWindow: boolean;
+    autoMerge: boolean;
+    explicitWorkerSpec: boolean;
+    noDecompose: boolean;
 }
 export declare function assertTeamSpawnAllowed(cwd: string, env?: NodeJS.ProcessEnv): Promise<void>;
 /** @internal Exported for testing */
@@ -56,7 +61,16 @@ export declare function buildStartupTasks(parsed: ParsedTeamArgs): Array<{
     subject: string;
     description: string;
     owner?: string;
+    delegation?: TeamTaskDelegationPlan;
 }>;
+export interface TeamLaunchTask {
+    subject: string;
+    description: string;
+    owner?: string;
+    role?: string;
+    delegation?: TeamTaskDelegationPlan;
+}
+export declare function buildTeamLaunchTasks(parsed: ParsedTeamArgs, decomposition: DecompositionPlan, effectiveWorkerCount: number): TeamLaunchTask[];
 /**
  * Main team subcommand handler.
  * Routes:

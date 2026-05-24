@@ -19110,6 +19110,13 @@ var LSP_SERVERS = {
     extensions: [".css", ".scss", ".less"],
     installHint: "npm install -g vscode-langservers-extracted"
   },
+  vue: {
+    name: "Vue Language Server (Volar)",
+    command: "vue-language-server",
+    args: ["--stdio"],
+    extensions: [".vue"],
+    installHint: "npm install -g @vue/language-server"
+  },
   yaml: {
     name: "YAML Language Server",
     command: "yaml-language-server",
@@ -20315,7 +20322,13 @@ async function runLspAggregatedDiagnostics(directory, extensions = [".ts", ".tsx
   const files = findFiles(directory, extensions, ["node_modules", "dist", "build", ".git"]);
   const allDiagnostics = [];
   let filesChecked = 0;
+  const skippedFiles = [];
+  const installHintSet = /* @__PURE__ */ new Set();
   for (const file of files) {
+    if (!getServerForFile(file)) {
+      skippedFiles.push({ file, reason: "no language server registered for extension" });
+      continue;
+    }
     try {
       await lspClientManager.runWithClientLease(file, async (client) => {
         await client.openDocument(file);
@@ -20329,18 +20342,29 @@ async function runLspAggregatedDiagnostics(directory, extensions = [".ts", ".tsx
         }
         filesChecked++;
       });
-    } catch (_error) {
-      continue;
+    } catch (error2) {
+      const message = error2 instanceof Error ? error2.message : String(error2);
+      const match = message.match(/^Language server '([^']+)' not found\.\nInstall with: (.+)$/s);
+      if (match) {
+        installHintSet.add(match[2].trim());
+        skippedFiles.push({ file, reason: `missing language server: ${match[1]}` });
+      } else {
+        skippedFiles.push({ file, reason: message });
+      }
     }
   }
   const errorCount = allDiagnostics.filter((d) => d.diagnostic.severity === 1).length;
   const warningCount = allDiagnostics.filter((d) => d.diagnostic.severity === 2).length;
+  const installHints = Array.from(installHintSet);
+  const allFilesSkipped = filesChecked === 0 && files.length > 0;
   return {
-    success: errorCount === 0,
+    success: errorCount === 0 && !allFilesSkipped,
     diagnostics: allDiagnostics,
     errorCount,
     warningCount,
-    filesChecked
+    filesChecked,
+    skippedFiles,
+    installHints
   };
 }
 
@@ -20400,25 +20424,41 @@ function formatTscResult(result) {
 function formatLspResult(result) {
   let diagnostics = "";
   let summary = "";
-  if (result.diagnostics.length === 0) {
+  if (result.diagnostics.length === 0 && result.installHints.length === 0 && result.skippedFiles.length === 0) {
     diagnostics = `Checked ${result.filesChecked} files. No diagnostics found!`;
     summary = `LSP check passed: 0 errors, 0 warnings (${result.filesChecked} files)`;
   } else {
-    const byFile = /* @__PURE__ */ new Map();
-    for (const item of result.diagnostics) {
-      if (!byFile.has(item.file)) {
-        byFile.set(item.file, []);
+    const hasSkips = result.skippedFiles.length > 0;
+    const parts = [];
+    if (result.installHints.length > 0) {
+      const hintLines = result.installHints.map((h) => `  - ${h}`).join("\n");
+      parts.push(
+        `\u26A0 Missing language servers detected:
+${hintLines}
+Install the language server(s) above and re-run, or these files cannot be checked.`
+      );
+    }
+    if (result.diagnostics.length > 0) {
+      const byFile = /* @__PURE__ */ new Map();
+      for (const item of result.diagnostics) {
+        if (!byFile.has(item.file)) {
+          byFile.set(item.file, []);
+        }
+        byFile.get(item.file).push(item);
       }
-      byFile.get(item.file).push(item);
-    }
-    const fileOutputs = [];
-    for (const [file, items] of byFile) {
-      const diags = items.map((i) => i.diagnostic);
-      fileOutputs.push(`${file}:
+      const fileOutputs = [];
+      for (const [file, items] of byFile) {
+        const diags = items.map((i) => i.diagnostic);
+        fileOutputs.push(`${file}:
 ${formatDiagnostics(diags, file)}`);
+      }
+      parts.push(fileOutputs.join("\n\n"));
     }
-    diagnostics = fileOutputs.join("\n\n");
-    summary = `LSP check ${result.success ? "passed" : "failed"}: ${result.errorCount} errors, ${result.warningCount} warnings (${result.filesChecked} files)`;
+    if (hasSkips) {
+      parts.push(`Skipped ${result.skippedFiles.length} file(s) due to missing or unregistered language servers.`);
+    }
+    diagnostics = parts.join("\n\n");
+    summary = hasSkips ? `LSP check incomplete: ${result.errorCount} errors, ${result.warningCount} warnings (${result.filesChecked}/${result.filesChecked + result.skippedFiles.length} files checked)` : `LSP check ${result.success ? "passed" : "failed"}: ${result.errorCount} errors, ${result.warningCount} warnings (${result.filesChecked} files)`;
   }
   return {
     strategy: "lsp",
@@ -21041,6 +21081,66 @@ function validateWorkingDirectory(workingDirectory) {
       return trustedRoot;
     }
     return providedRoot;
+  }
+  let resolvedReal;
+  try {
+    resolvedReal = (0, import_fs10.realpathSync)(resolved);
+  } catch {
+    throw new Error(`workingDirectory '${workingDirectory}' does not exist or is not accessible.`);
+  }
+  const rel = (0, import_path11.relative)(trustedRootReal, resolvedReal);
+  if (rel.startsWith("..") || (0, import_path11.isAbsolute)(rel)) {
+    throw new Error(`workingDirectory '${workingDirectory}' is outside the trusted worktree root '${trustedRoot}'.`);
+  }
+  return trustedRoot;
+}
+function getGitCommonDir(cwd) {
+  try {
+    const commonDir = (0, import_child_process8.execSync)("git rev-parse --path-format=absolute --git-common-dir", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: 5e3
+    }).trim();
+    return (0, import_fs10.realpathSync)(commonDir);
+  } catch {
+    return null;
+  }
+}
+function validateWorkingDirectoryOrLinkedWorktree(workingDirectory) {
+  const trustedRoot = getWorktreeRoot(process.cwd()) || process.cwd();
+  if (!workingDirectory) {
+    return trustedRoot;
+  }
+  const resolved = (0, import_path11.resolve)(workingDirectory);
+  let trustedRootReal;
+  try {
+    trustedRootReal = (0, import_fs10.realpathSync)(trustedRoot);
+  } catch {
+    trustedRootReal = trustedRoot;
+  }
+  const providedRoot = getWorktreeRoot(resolved);
+  if (providedRoot) {
+    let providedRootReal;
+    try {
+      providedRootReal = (0, import_fs10.realpathSync)(providedRoot);
+    } catch {
+      throw new Error(`workingDirectory '${workingDirectory}' does not exist or is not accessible.`);
+    }
+    if (providedRootReal === trustedRootReal) {
+      return providedRoot;
+    }
+    const trustedCommonDir = getGitCommonDir(trustedRoot);
+    const providedCommonDir = getGitCommonDir(providedRoot);
+    if (trustedCommonDir && providedCommonDir && providedCommonDir === trustedCommonDir) {
+      return providedRoot;
+    }
+    console.error("[worktree] workingDirectory resolved to different git worktree root, using trusted root", {
+      workingDirectory: resolved,
+      providedRoot: providedRootReal,
+      trustedRoot: trustedRootReal
+    });
+    return trustedRoot;
   }
   let resolvedReal;
   try {
@@ -22515,6 +22615,9 @@ function resolveStateRoot(directory) {
   const baseDir = directory || process.cwd();
   return getWorktreeRoot(baseDir) || baseDir;
 }
+function hasSessionEndSummary(baseDir, sessionId) {
+  return (0, import_fs12.existsSync)((0, import_path13.join)(getOmcRoot(baseDir), "sessions", `${sessionId}.json`));
+}
 function findSessionOwnedStateFiles(mode, sessionId, directory) {
   const matches = /* @__PURE__ */ new Set();
   const baseDir = resolveStateRoot(directory);
@@ -22530,6 +22633,30 @@ function findSessionOwnedStateFiles(mode, sessionId, directory) {
     try {
       const raw = JSON.parse((0, import_fs12.readFileSync)(candidatePath, "utf-8"));
       if (getStateSessionOwner(raw) === sessionId) {
+        matches.add(candidatePath);
+      }
+    } catch {
+    }
+  }
+  return [...matches];
+}
+function findCompletedSessionStateFiles(mode, directory, requesterSessionId) {
+  const matches = /* @__PURE__ */ new Set();
+  const baseDir = resolveStateRoot(directory);
+  for (const sid of listSessionIds(baseDir)) {
+    if (requesterSessionId && sid === requesterSessionId) {
+      continue;
+    }
+    if (!hasSessionEndSummary(baseDir, sid)) {
+      continue;
+    }
+    const candidatePath = resolveSessionStatePath(mode, sid, baseDir);
+    if (!(0, import_fs12.existsSync)(candidatePath)) {
+      continue;
+    }
+    try {
+      const raw = JSON.parse((0, import_fs12.readFileSync)(candidatePath, "utf-8"));
+      if (raw.active === true) {
         matches.add(candidatePath);
       }
     } catch {
@@ -22862,6 +22989,7 @@ var STATE_TOOL_MODES = [
 ];
 var EXTRA_STATE_ONLY_MODES = ["ralplan", "omc-teams", "skill-active"];
 var CANCEL_SIGNAL_TTL_MS = 3e4;
+var OWNER_SESSION_FALLBACK_MODES = /* @__PURE__ */ new Set(["ralph"]);
 function readTeamNamesFromStateFile(statePath) {
   if (!(0, import_fs14.existsSync)(statePath)) return [];
   try {
@@ -22936,6 +23064,60 @@ function getLegacyStateFileCandidates(mode, root) {
   ];
   return [...new Set(candidates)];
 }
+function getWorkingDirectoryLocalOmcRoot(root) {
+  return (0, import_path15.join)(root, ".omc");
+}
+function shouldCheckWorkingDirectoryLocalState(root) {
+  return getWorkingDirectoryLocalOmcRoot(root) !== getOmcRoot(root);
+}
+function getWorkingDirectoryLocalSessionStatePath(mode, root, sessionId) {
+  const normalizedName = mode.endsWith("-state") ? mode : `${mode}-state`;
+  return (0, import_path15.join)(getWorkingDirectoryLocalOmcRoot(root), "state", "sessions", sessionId, `${normalizedName}.json`);
+}
+function getWorkingDirectoryLocalLegacyStateFileCandidates(mode, root) {
+  const normalizedName = mode.endsWith("-state") ? mode : `${mode}-state`;
+  return [
+    (0, import_path15.join)(getWorkingDirectoryLocalOmcRoot(root), "state", `${normalizedName}.json`),
+    (0, import_path15.join)(getWorkingDirectoryLocalOmcRoot(root), `${normalizedName}.json`)
+  ];
+}
+function getWorkingDirectoryLocalStateClearCandidates(mode, root, sessionId) {
+  if (!shouldCheckWorkingDirectoryLocalState(root)) {
+    return [];
+  }
+  const paths = /* @__PURE__ */ new Set();
+  if (sessionId) {
+    paths.add(getWorkingDirectoryLocalSessionStatePath(mode, root, sessionId));
+  }
+  for (const legacyPath of getWorkingDirectoryLocalLegacyStateFileCandidates(mode, root)) {
+    paths.add(legacyPath);
+  }
+  return [...paths];
+}
+function clearWorkingDirectoryLocalStateCandidates(mode, root, sessionId) {
+  let cleared = 0;
+  let hadFailure = false;
+  const paths = getWorkingDirectoryLocalStateClearCandidates(mode, root, sessionId);
+  const localLegacyPaths = new Set(getWorkingDirectoryLocalLegacyStateFileCandidates(mode, root));
+  for (const statePath of paths) {
+    if (!(0, import_fs14.existsSync)(statePath)) {
+      continue;
+    }
+    try {
+      if (sessionId && localLegacyPaths.has(statePath)) {
+        const raw = JSON.parse((0, import_fs14.readFileSync)(statePath, "utf-8"));
+        if (!canClearStateForSession(raw, sessionId)) {
+          continue;
+        }
+      }
+      (0, import_fs14.unlinkSync)(statePath);
+      cleared++;
+    } catch {
+      hadFailure = true;
+    }
+  }
+  return { cleared, hadFailure, paths };
+}
 function clearLegacyStateCandidates(mode, root, sessionId) {
   let cleared = 0;
   let hadFailure = false;
@@ -22972,6 +23154,112 @@ function clearSessionOwnedStateCandidates(mode, root, sessionId) {
   }
   return { cleared, hadFailure, paths };
 }
+function clearCompletedSessionStateCandidates(mode, root, requesterSessionId) {
+  let cleared = 0;
+  let hadFailure = false;
+  const paths = findCompletedSessionStateFiles(mode, root, requesterSessionId);
+  for (const statePath of paths) {
+    try {
+      (0, import_fs14.unlinkSync)(statePath);
+      cleared++;
+    } catch {
+      hadFailure = true;
+    }
+  }
+  return { cleared, hadFailure, paths };
+}
+function getStateClearCheckedPaths(mode, root, sessionId) {
+  const paths = /* @__PURE__ */ new Set();
+  if (sessionId) {
+    paths.add(MODE_CONFIGS[mode] ? getStateFilePath(root, mode, sessionId) : resolveSessionStatePath(mode, sessionId, root));
+  } else {
+    paths.add(getStatePath(mode, root));
+  }
+  for (const legacyPath of getLegacyStateFileCandidates(mode, root)) {
+    paths.add(legacyPath);
+  }
+  for (const localPath of getWorkingDirectoryLocalStateClearCandidates(mode, root, sessionId)) {
+    paths.add(localPath);
+  }
+  const sessionIds = sessionId ? [sessionId, ...listSessionIds(root)] : listSessionIds(root);
+  for (const sid of new Set(sessionIds)) {
+    paths.add(MODE_CONFIGS[mode] ? getStateFilePath(root, mode, sid) : resolveSessionStatePath(mode, sid, root));
+  }
+  return [...paths];
+}
+function formatStateClearNoopMessage(mode, root, sessionId) {
+  const scope = sessionId ? ` in session: ${sessionId}` : "";
+  const checkedPaths = getStateClearCheckedPaths(mode, root, sessionId);
+  const checked = checkedPaths.length > 0 ? `
+- Checked paths:
+${checkedPaths.map((statePath) => `  - ${statePath}`).join("\n")}` : "";
+  return `No state found to clear for mode: ${mode}${scope}${checked}`;
+}
+function getModeRuntimeArtifactNames(mode) {
+  return [
+    `${mode}-stop-breaker.json`,
+    `${mode}-last-steer-at`,
+    `${mode}-continue-steer.lock`
+  ];
+}
+function clearModeRuntimeArtifacts(mode, root, sessionId) {
+  let cleared = 0;
+  let hadFailure = false;
+  const stateRoot = (0, import_path15.join)(getOmcRoot(root), "state");
+  const candidateDirs = /* @__PURE__ */ new Set([stateRoot]);
+  if (sessionId) {
+    candidateDirs.add((0, import_path15.join)(stateRoot, "sessions", sessionId));
+  } else {
+    for (const sid of listSessionIds(root)) {
+      candidateDirs.add((0, import_path15.join)(stateRoot, "sessions", sid));
+    }
+  }
+  for (const dir of candidateDirs) {
+    for (const artifactName of getModeRuntimeArtifactNames(mode)) {
+      const artifactPath = (0, import_path15.join)(dir, artifactName);
+      if (!(0, import_fs14.existsSync)(artifactPath)) {
+        continue;
+      }
+      try {
+        (0, import_fs14.unlinkSync)(artifactPath);
+        cleared++;
+      } catch {
+        hadFailure = true;
+      }
+    }
+  }
+  return { cleared, hadFailure };
+}
+function writeSessionCancelSignal(root, sessionId, mode) {
+  const now = Date.now();
+  const cancelSignalPath = resolveSessionStatePath("cancel-signal", sessionId, root);
+  atomicWriteJsonSync(cancelSignalPath, {
+    active: true,
+    requested_at: new Date(now).toISOString(),
+    expires_at: new Date(now + CANCEL_SIGNAL_TTL_MS).toISOString(),
+    mode,
+    source: "state_clear"
+  });
+}
+function isSessionModeActive(mode, root, sessionId) {
+  if (MODE_CONFIGS[mode]) {
+    return isModeActive(mode, root, sessionId);
+  }
+  const statePath = resolveSessionStatePath(mode, sessionId, root);
+  if (!(0, import_fs14.existsSync)(statePath)) {
+    return false;
+  }
+  try {
+    const state = JSON.parse((0, import_fs14.readFileSync)(statePath, "utf-8"));
+    return state.active === true;
+  } catch {
+    return false;
+  }
+}
+function findSingleOwningSessionForMode(mode, root, requesterSessionId) {
+  const owningSessions = listSessionIds(root).filter((sid) => sid !== requesterSessionId && isSessionModeActive(mode, root, sid));
+  return owningSessions.length === 1 ? owningSessions[0] : void 0;
+}
 var stateReadTool = {
   name: "state_read",
   description: "Read the current state for a specific mode (ralph, ultrawork, autopilot, etc.). Returns the JSON state data or indicates if no state exists.",
@@ -22990,6 +23278,30 @@ var stateReadTool = {
         validateSessionId(sessionId);
         const statePath2 = MODE_CONFIGS[mode] ? getStateFilePath(root, mode, sessionId) : resolveSessionStatePath(mode, sessionId, root);
         if (!(0, import_fs14.existsSync)(statePath2)) {
+          const completedSessionPaths = findCompletedSessionStateFiles(mode, root, sessionId);
+          if (completedSessionPaths.length > 0) {
+            const orphanList = completedSessionPaths.map((orphanPath) => {
+              const sessionMarker = `${(0, import_path15.join)("state", "sessions")}/`;
+              const markerIndex = orphanPath.indexOf(sessionMarker);
+              if (markerIndex === -1) return `- ${orphanPath}`;
+              const rest = orphanPath.slice(markerIndex + sessionMarker.length);
+              const orphanSessionId = rest.split(/[\\/]/)[0] || "unknown";
+              return `- session: ${orphanSessionId}
+  path: ${orphanPath}`;
+            }).join("\n");
+            return {
+              content: [{
+                type: "text",
+                text: `No state found for mode: ${mode} in session: ${sessionId}
+Expected path: ${statePath2}
+
+Discovered ${completedSessionPaths.length} completed-session orphan state file${completedSessionPaths.length === 1 ? "" : "s"} for this mode:
+${orphanList}
+
+Run state_clear(mode="${mode}", session_id="${sessionId}") to clear the current session plus these completed-session orphan files.`
+              }]
+            };
+          }
           return {
             content: [{
               type: "text",
@@ -23236,28 +23548,62 @@ var stateClearTool = {
       };
       if (sessionId) {
         validateSessionId(sessionId);
+        const requestedSessionOwnedPaths = findSessionOwnedStateFiles(mode, sessionId, root);
         for (const teamStatePath of findSessionOwnedStateFiles("team", sessionId, root)) {
           collectTeamNamesForCleanup(teamStatePath);
         }
-        const now = Date.now();
-        const cancelSignalPath = resolveSessionStatePath("cancel-signal", sessionId, root);
-        atomicWriteJsonSync(cancelSignalPath, {
-          active: true,
-          requested_at: new Date(now).toISOString(),
-          expires_at: new Date(now + CANCEL_SIGNAL_TTL_MS).toISOString(),
-          mode,
-          source: "state_clear"
-        });
+        if (mode === "team") {
+          for (const teamStatePath of findCompletedSessionStateFiles("team", root, sessionId)) {
+            collectTeamNamesForCleanup(teamStatePath);
+          }
+        }
+        const completedSessionCleanup = clearCompletedSessionStateCandidates(mode, root, sessionId);
+        const runtimeCleanup2 = clearModeRuntimeArtifacts(mode, root, sessionId);
+        writeSessionCancelSignal(root, sessionId, mode);
         if (MODE_CONFIGS[mode]) {
           const success = clearModeState(mode, root, sessionId);
           const sessionCleanup2 = clearSessionOwnedStateCandidates(mode, root, sessionId);
           const legacyCleanup2 = clearLegacyStateCandidates(mode, root, sessionId);
+          const shouldUseLocalFallback2 = requestedSessionOwnedPaths.length === 0 && completedSessionCleanup.cleared === 0 && sessionCleanup2.cleared === 0 && legacyCleanup2.cleared === 0;
+          const workingDirectoryLocalCleanup2 = shouldUseLocalFallback2 ? clearWorkingDirectoryLocalStateCandidates(mode, root, sessionId) : { cleared: 0, hadFailure: false, paths: [] };
+          let ownerSessionId2;
+          let ownerSessionCleanup2 = { cleared: 0, hadFailure: false, paths: [] };
+          let ownerLegacyCleanup2 = { cleared: 0, hadFailure: false };
+          if (OWNER_SESSION_FALLBACK_MODES.has(mode) && requestedSessionOwnedPaths.length === 0 && completedSessionCleanup.cleared === 0 && sessionCleanup2.cleared === 0 && legacyCleanup2.cleared === 0 && workingDirectoryLocalCleanup2.cleared === 0) {
+            ownerSessionId2 = findSingleOwningSessionForMode(mode, root, sessionId);
+            if (ownerSessionId2) {
+              if (mode === "team") {
+                for (const teamStatePath of findSessionOwnedStateFiles("team", ownerSessionId2, root)) {
+                  collectTeamNamesForCleanup(teamStatePath);
+                }
+              }
+              writeSessionCancelSignal(root, ownerSessionId2, mode);
+              const ownerRuntimeCleanup = clearModeRuntimeArtifacts(mode, root, ownerSessionId2);
+              runtimeCleanup2.cleared += ownerRuntimeCleanup.cleared;
+              runtimeCleanup2.hadFailure ||= ownerRuntimeCleanup.hadFailure;
+              clearModeState(mode, root, ownerSessionId2);
+              ownerSessionCleanup2 = clearSessionOwnedStateCandidates(mode, root, ownerSessionId2);
+              ownerLegacyCleanup2 = clearLegacyStateCandidates(mode, root, ownerSessionId2);
+            }
+          }
           const ghostNoteParts2 = [];
           if (legacyCleanup2.cleared > 0) {
             ghostNoteParts2.push("ghost legacy file also removed");
           }
+          if (completedSessionCleanup.cleared > 0) {
+            ghostNoteParts2.push(`removed ${completedSessionCleanup.cleared} completed-session orphan file${completedSessionCleanup.cleared === 1 ? "" : "s"}`);
+          }
           if (sessionCleanup2.cleared > 0) {
             ghostNoteParts2.push(`removed ${sessionCleanup2.cleared} recovered session file${sessionCleanup2.cleared === 1 ? "" : "s"}`);
+          }
+          if (workingDirectoryLocalCleanup2.cleared > 0) {
+            ghostNoteParts2.push(`removed ${workingDirectoryLocalCleanup2.cleared} workingDirectory-local state file${workingDirectoryLocalCleanup2.cleared === 1 ? "" : "s"}`);
+          }
+          if (runtimeCleanup2.cleared > 0) {
+            ghostNoteParts2.push(`removed ${runtimeCleanup2.cleared} runtime artifact${runtimeCleanup2.cleared === 1 ? "" : "s"}`);
+          }
+          if (ownerSessionId2) {
+            ghostNoteParts2.push(`cleared owning session: ${ownerSessionId2}`);
           }
           const ghostNote2 = ghostNoteParts2.length > 0 ? ` (${ghostNoteParts2.join(", ")})` : "";
           const runtimeCleanupNote2 = (() => {
@@ -23270,7 +23616,16 @@ var stateClearTool = {
             if (prunedMissions > 0) details.push(`pruned ${prunedMissions} HUD mission entry(ies)`);
             return details.length > 0 ? ` (${details.join(", ")})` : "";
           })();
-          if (success && !legacyCleanup2.hadFailure && !sessionCleanup2.hadFailure) {
+          const clearedStateOrArtifacts2 = requestedSessionOwnedPaths.length + completedSessionCleanup.cleared + sessionCleanup2.cleared + legacyCleanup2.cleared + workingDirectoryLocalCleanup2.cleared + ownerSessionCleanup2.cleared + ownerLegacyCleanup2.cleared + runtimeCleanup2.cleared;
+          if (!ownerSessionId2 && clearedStateOrArtifacts2 === 0 && success && !legacyCleanup2.hadFailure && !sessionCleanup2.hadFailure && !workingDirectoryLocalCleanup2.hadFailure && !completedSessionCleanup.hadFailure && !ownerSessionCleanup2.hadFailure && !ownerLegacyCleanup2.hadFailure && !runtimeCleanup2.hadFailure) {
+            return {
+              content: [{
+                type: "text",
+                text: formatStateClearNoopMessage(mode, root, sessionId)
+              }]
+            };
+          }
+          if (success && !legacyCleanup2.hadFailure && !sessionCleanup2.hadFailure && !workingDirectoryLocalCleanup2.hadFailure && !completedSessionCleanup.hadFailure && !ownerSessionCleanup2.hadFailure && !ownerLegacyCleanup2.hadFailure && !runtimeCleanup2.hadFailure) {
             return {
               content: [{
                 type: "text",
@@ -23288,12 +23643,45 @@ var stateClearTool = {
         }
         const sessionCleanup = clearSessionOwnedStateCandidates(mode, root, sessionId);
         const legacyCleanup = clearLegacyStateCandidates(mode, root, sessionId);
+        const shouldUseLocalFallback = requestedSessionOwnedPaths.length === 0 && completedSessionCleanup.cleared === 0 && sessionCleanup.cleared === 0 && legacyCleanup.cleared === 0;
+        const workingDirectoryLocalCleanup = shouldUseLocalFallback ? clearWorkingDirectoryLocalStateCandidates(mode, root, sessionId) : { cleared: 0, hadFailure: false, paths: [] };
+        let ownerSessionId;
+        let ownerSessionCleanup = { cleared: 0, hadFailure: false, paths: [] };
+        let ownerLegacyCleanup = { cleared: 0, hadFailure: false };
+        if (OWNER_SESSION_FALLBACK_MODES.has(mode) && requestedSessionOwnedPaths.length === 0 && completedSessionCleanup.cleared === 0 && sessionCleanup.cleared === 0 && legacyCleanup.cleared === 0 && workingDirectoryLocalCleanup.cleared === 0) {
+          ownerSessionId = findSingleOwningSessionForMode(mode, root, sessionId);
+          if (ownerSessionId) {
+            if (mode === "team") {
+              for (const teamStatePath of findSessionOwnedStateFiles("team", ownerSessionId, root)) {
+                collectTeamNamesForCleanup(teamStatePath);
+              }
+            }
+            writeSessionCancelSignal(root, ownerSessionId, mode);
+            const ownerRuntimeCleanup = clearModeRuntimeArtifacts(mode, root, ownerSessionId);
+            runtimeCleanup2.cleared += ownerRuntimeCleanup.cleared;
+            runtimeCleanup2.hadFailure ||= ownerRuntimeCleanup.hadFailure;
+            ownerSessionCleanup = clearSessionOwnedStateCandidates(mode, root, ownerSessionId);
+            ownerLegacyCleanup = clearLegacyStateCandidates(mode, root, ownerSessionId);
+          }
+        }
         const ghostNoteParts = [];
         if (legacyCleanup.cleared > 0) {
           ghostNoteParts.push("ghost legacy file also removed");
         }
+        if (completedSessionCleanup.cleared > 0) {
+          ghostNoteParts.push(`removed ${completedSessionCleanup.cleared} completed-session orphan file${completedSessionCleanup.cleared === 1 ? "" : "s"}`);
+        }
         if (sessionCleanup.cleared > 0) {
           ghostNoteParts.push(`removed ${sessionCleanup.cleared} recovered session file${sessionCleanup.cleared === 1 ? "" : "s"}`);
+        }
+        if (workingDirectoryLocalCleanup.cleared > 0) {
+          ghostNoteParts.push(`removed ${workingDirectoryLocalCleanup.cleared} workingDirectory-local state file${workingDirectoryLocalCleanup.cleared === 1 ? "" : "s"}`);
+        }
+        if (runtimeCleanup2.cleared > 0) {
+          ghostNoteParts.push(`removed ${runtimeCleanup2.cleared} runtime artifact${runtimeCleanup2.cleared === 1 ? "" : "s"}`);
+        }
+        if (ownerSessionId) {
+          ghostNoteParts.push(`cleared owning session: ${ownerSessionId}`);
         }
         const ghostNote = ghostNoteParts.length > 0 ? ` (${ghostNoteParts.join(", ")})` : "";
         const runtimeCleanupNote = (() => {
@@ -23306,10 +23694,20 @@ var stateClearTool = {
           if (prunedMissions > 0) details.push(`pruned ${prunedMissions} HUD mission entry(ies)`);
           return details.length > 0 ? ` (${details.join(", ")})` : "";
         })();
+        const clearedStateOrArtifacts = requestedSessionOwnedPaths.length + completedSessionCleanup.cleared + sessionCleanup.cleared + legacyCleanup.cleared + workingDirectoryLocalCleanup.cleared + ownerSessionCleanup.cleared + ownerLegacyCleanup.cleared + runtimeCleanup2.cleared;
+        const hadFailure = legacyCleanup.hadFailure || sessionCleanup.hadFailure || workingDirectoryLocalCleanup.hadFailure || completedSessionCleanup.hadFailure || ownerSessionCleanup.hadFailure || ownerLegacyCleanup.hadFailure || runtimeCleanup2.hadFailure;
+        if (!ownerSessionId && clearedStateOrArtifacts === 0 && !hadFailure) {
+          return {
+            content: [{
+              type: "text",
+              text: formatStateClearNoopMessage(mode, root, sessionId)
+            }]
+          };
+        }
         return {
           content: [{
             type: "text",
-            text: `${legacyCleanup.hadFailure || sessionCleanup.hadFailure ? "Warning: Some files could not be removed" : "Successfully cleared state"} for mode: ${mode} in session: ${sessionId}${ghostNote}${runtimeCleanupNote}`
+            text: `${hadFailure ? "Warning: Some files could not be removed" : "Successfully cleared state"} for mode: ${mode} in session: ${sessionId}${ghostNote}${runtimeCleanupNote}`
           }]
         };
       }
@@ -23335,6 +23733,7 @@ var stateClearTool = {
           }
         }
       }
+      const runtimeCleanup = clearModeRuntimeArtifacts(mode, root);
       let clearedCount = 0;
       const errors = [];
       if (mode === "team") {
@@ -23354,6 +23753,10 @@ var stateClearTool = {
       clearedCount += extraLegacyCleanup.cleared;
       if (extraLegacyCleanup.hadFailure) {
         errors.push("legacy path");
+      }
+      clearedCount += runtimeCleanup.cleared;
+      if (runtimeCleanup.hadFailure) {
+        errors.push("runtime artifacts");
       }
       const sessionIds = listSessionIds(root);
       for (const sid of sessionIds) {
@@ -23393,7 +23796,7 @@ var stateClearTool = {
         return {
           content: [{
             type: "text",
-            text: `No state found to clear for mode: ${mode}`
+            text: formatStateClearNoopMessage(mode, root)
           }]
         };
       }
@@ -27290,7 +27693,7 @@ var wikiIngestTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const result = ingestKnowledge(root, {
         title: args.title,
         content: args.content,
@@ -27331,7 +27734,7 @@ var wikiQueryTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const matches = queryWiki(root, args.query, {
         tags: args.tags,
         category: args.category,
@@ -27380,7 +27783,7 @@ var wikiLintTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const report = lintWiki(root);
       if (report.issues.length === 0) {
         return {
@@ -27428,7 +27831,7 @@ var wikiAddTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const slug = titleToSlug(args.title);
       if (readPage(root, slug)) {
         return {
@@ -27471,7 +27874,7 @@ var wikiListTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const index = readIndex(root);
       if (!index) {
         const pages = listPages(root);
@@ -27517,7 +27920,7 @@ var wikiReadTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const filename = args.page.endsWith(".md") ? args.page : `${args.page}.md`;
       const page = readPage(root, filename);
       if (!page) {
@@ -27565,7 +27968,7 @@ var wikiDeleteTool = {
   },
   handler: async (args) => {
     try {
-      const root = validateWorkingDirectory(args.workingDirectory);
+      const root = validateWorkingDirectoryOrLinkedWorktree(args.workingDirectory);
       const filename = args.page.endsWith(".md") ? args.page : `${args.page}.md`;
       const deleted = deletePage(root, filename);
       if (!deleted) {
@@ -27799,6 +28202,15 @@ function parseYamlMetadata(yamlContent) {
       case "sessionId":
         metadata.sessionId = parseStringValue(rawValue);
         break;
+      case "model":
+        metadata.model = parseStringValue(rawValue);
+        break;
+      case "agent":
+        metadata.agent = parseStringValue(rawValue);
+        break;
+      case "matching":
+        metadata.matching = parseStringValue(rawValue);
+        break;
       case "quality":
         metadata.quality = parseInt(rawValue, 10) || void 0;
         break;
@@ -27809,9 +28221,9 @@ function parseYamlMetadata(yamlContent) {
       case "tags": {
         const { value, consumed } = parseArrayValue(rawValue, lines, i);
         if (key === "triggers") {
-          metadata.triggers = Array.isArray(value) ? value : [value];
+          metadata.triggers = normalizeStringArray(value);
         } else {
-          metadata.tags = Array.isArray(value) ? value : [value];
+          metadata.tags = normalizeStringArray(value);
         }
         i += consumed - 1;
         break;
@@ -27827,6 +28239,10 @@ function parseStringValue(value) {
     return value.slice(1, -1);
   }
   return value;
+}
+function normalizeStringArray(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => item.trim()).filter(Boolean);
 }
 function parseArrayValue(rawValue, lines, currentIndex) {
   if (rawValue.startsWith("[")) {

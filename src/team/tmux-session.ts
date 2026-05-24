@@ -12,6 +12,7 @@ import { join, basename, isAbsolute, win32 } from 'path';
 import fs from 'fs/promises';
 import { validateTeamName } from './team-name.js';
 import { tmuxExec, tmuxExecAsync, tmuxShell, tmuxCmdAsync } from '../cli/tmux-utils.js';
+import { configureTmuxClipboardForSession, configureTmuxClipboardForSessionAsync } from '../cli/tmux-clipboard.js';
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
@@ -393,6 +394,9 @@ export function createSession(teamName: string, workerName: string, workingDirec
     args.push('-c', workingDirectory);
   }
   tmuxExec(args, { stripTmux: true, stdio: 'pipe', timeout: 5000 });
+  try {
+    configureTmuxClipboardForSession(name, { stripTmux: true, stdio: 'pipe', timeout: 5000 });
+  } catch { /* non-fatal — older tmux builds may not support these options */ }
 
   return name;
 }
@@ -441,14 +445,20 @@ export function listActiveSessions(teamName: string): string[] {
  *
  * Instead of passing JSON via tmux send-keys (brittle quoting), the caller
  * writes config to a temp file and passes --config flag:
- *   node dist/team/bridge-entry.js --config /tmp/omc-bridge-{worker}.json
+ *   <current-js-runtime> dist/team/bridge-entry.js --config /tmp/omc-bridge-{worker}.json
  */
+function quoteBridgeShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 export function spawnBridgeInSession(
   tmuxSession: string,
   bridgeScriptPath: string,
   configFilePath: string
 ): void {
-  const cmd = `node "${bridgeScriptPath}" --config "${configFilePath}"`;
+  const cmd = [process.execPath, bridgeScriptPath, '--config', configFilePath]
+    .map(quoteBridgeShellArg)
+    .join(' ');
   tmuxExec(['send-keys', '-t', tmuxSession, cmd, 'Enter'], { stripTmux: true, stdio: 'pipe', timeout: 5000 });
 }
 
@@ -557,6 +567,13 @@ export async function createTeamSession(
 
   const teamTarget = sessionAndWindow; // "session:window" form
   const resolvedSessionName = teamTarget.split(':')[0];
+
+  try {
+    await configureTmuxClipboardForSessionAsync(resolvedSessionName);
+  } catch {
+    // Clipboard setup is best-effort so older tmux builds do not block team launch.
+  }
+
   const workerPaneIds: string[] = [];
 
   if (workerCount <= 0) {
@@ -644,7 +661,29 @@ function paneHasTrustPrompt(captured: string): boolean {
   return hasQuestion && hasChoices;
 }
 
+function paneHasClaudeStartupBanner(captured: string): boolean {
+  const lines = captured
+    .split('\n')
+    .map((line) => line.replace(/\r/g, '').trim())
+    .filter((line) => line.length > 0)
+    .slice(-20);
+  const lastPromptIndex = lines.findLastIndex(paneLineLooksLikeIdlePrompt);
+  // Claude Code v2.1.x renders the permission-mode indicator
+  // ("⏵⏵ bypass permissions on (shift+tab to cycle)") *below* the prompt
+  // as a persistent idle-state UI element. If a prompt is present anywhere
+  // in the tail, the pane has finished bootstrapping and the banner is an
+  // idle mode indicator, not a startup signal.
+  if (lastPromptIndex >= 0) return false;
+  const lastStartupBannerIndex = lines.findLastIndex((line) =>
+    /bypass\s+permissions\s+on/i.test(line)
+    || /shift\+tab\s+to\s+cycle/i.test(line)
+    || /^⏵⏵\s+/.test(line),
+  );
+  return lastStartupBannerIndex >= 0;
+}
+
 function paneIsBootstrapping(captured: string): boolean {
+  if (paneHasClaudeStartupBanner(captured)) return true;
   const lines = captured
     .split('\n')
     .map((line) => line.replace(/\r/g, '').trim())
@@ -666,6 +705,14 @@ export function paneHasActiveTask(captured: string): boolean {
   return false;
 }
 
+function paneLineLooksLikeIdlePrompt(line: string): boolean {
+  // Claude Code can render its idle input prompt inside a box/left gutter
+  // (for example "│ ❯"). Treat that as ready while still requiring the prompt
+  // glyph to be at the visual start of the line, not embedded in arbitrary
+  // output text.
+  return /^\s*(?:[│┃║▌▐▏▕╎┆┊]\s*)?[›>❯]\s*/u.test(line);
+}
+
 export function paneLooksReady(captured: string): boolean {
   const content = captured.trimEnd();
   if (content === '') return false;
@@ -677,10 +724,8 @@ export function paneLooksReady(captured: string): boolean {
   if (paneIsBootstrapping(content)) return false;
 
   const lastLine = lines[lines.length - 1]!;
-  if (/^\s*[›>❯]\s*/u.test(lastLine)) return true;
-  const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
-  const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
-  return hasCodexPromptLine || hasClaudePromptLine;
+  if (paneLineLooksLikeIdlePrompt(lastLine)) return true;
+  return lines.some(paneLineLooksLikeIdlePrompt);
 }
 
 export interface WaitForPaneReadyOptions {
@@ -777,6 +822,9 @@ export async function sendToWorker(
 
     // Check for trust prompt and auto-dismiss before sending our text
     const initialCapture = await capturePaneAsync(paneId);
+    if (paneHasClaudeStartupBanner(initialCapture)) {
+      return false;
+    }
     const paneBusy = paneHasActiveTask(initialCapture);
 
     if (paneHasTrustPrompt(initialCapture)) {
@@ -908,15 +956,30 @@ export async function injectToLeaderPane(
  * Check if a worker pane is still alive.
  * Uses pane ID for stable targeting (not pane index).
  */
-export async function isWorkerAlive(paneId: string): Promise<boolean> {
+export type WorkerPaneLiveness = 'alive' | 'dead' | 'unknown';
+
+function isTmuxPaneNotFoundError(error: unknown): boolean {
+  const err = error as { stderr?: unknown; stdout?: unknown; message?: unknown } | null | undefined;
+  const text = [err?.stderr, err?.stdout, err?.message]
+    .filter((part): part is string => typeof part === 'string')
+    .join('\n')
+    .toLowerCase();
+  return /can't find pane|can't find window|can't find session|no such pane|pane not found|unknown pane/.test(text);
+}
+
+export async function getWorkerLiveness(paneId: string): Promise<WorkerPaneLiveness> {
   try {
     const result = await tmuxCmdAsync([
       'display-message', '-t', paneId, '-p', '#{pane_dead}'
     ]);
-    return result.stdout.trim() === '0';
-  } catch {
-    return false;
+    return result.stdout.trim() === '0' ? 'alive' : 'dead';
+  } catch (error) {
+    return isTmuxPaneNotFoundError(error) ? 'dead' : 'unknown';
   }
+}
+
+export async function isWorkerAlive(paneId: string): Promise<boolean> {
+  return (await getWorkerLiveness(paneId)) === 'alive';
 }
 
 /**

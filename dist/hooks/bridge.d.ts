@@ -23,6 +23,10 @@ export declare function requiredKeysForHook(hookType: string): string[];
 export interface HookInput {
     /** Session identifier */
     sessionId?: string;
+    /** Optional agent name context for routing prompt variants */
+    agentName?: string;
+    /** Optional model identifier context for routing prompt variants */
+    model?: string;
     /** User prompt text */
     prompt?: string;
     /** Message content (alternative to prompt) */
@@ -74,6 +78,18 @@ export declare function sanitizeHookOutputForSerialization(output: SerializableH
  * Hook types that can be processed
  */
 export type HookType = "keyword-detector" | "stop-continuation" | "ralph" | "persistent-mode" | "session-start" | "session-end" | "pre-tool-use" | "post-tool-use" | "autopilot" | "subagent-start" | "subagent-stop" | "pre-compact" | "setup-init" | "setup-maintenance" | "permission-request" | "code-simplifier";
+export declare function extractAskUserQuestionPrompts(toolInput: unknown): {
+    options: {
+        label: string;
+        value?: string;
+        description?: string;
+    }[];
+    allowOther: boolean;
+    otherLabel: string;
+    multiSelect: boolean;
+    header?: string | undefined;
+    question: string;
+}[];
 /**
  * Fire-and-forget notification for AskUserQuestion (issue #597).
  * Extracted for testability; the dynamic import makes direct assertion

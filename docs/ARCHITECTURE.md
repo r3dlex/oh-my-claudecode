@@ -275,12 +275,12 @@ ralplan this feature
 | `hud` | Status bar configuration | `/oh-my-claudecode:hud` |
 | `omc-setup` | Initial setup wizard | `/oh-my-claudecode:omc-setup` |
 | `omc-doctor` | Diagnose installation | `/oh-my-claudecode:omc-doctor` |
-| `learner` | Extract reusable skills from session | `/oh-my-claudecode:learner` |
+| `skillify` | Extract reusable skills from session | `/oh-my-claudecode:skillify` (`learner` deprecated alias) |
 | `skill` | Manage local skills (list/add/remove) | `/oh-my-claudecode:skill` |
 | `trace` | Evidence-driven causal tracing | `/oh-my-claudecode:trace` |
 | `release` | Automated release workflow | `/oh-my-claudecode:release` |
 | `deepinit` | Generate hierarchical AGENTS.md | `/oh-my-claudecode:deepinit` |
-| `deep-interview` | Socratic deep interview | `/oh-my-claudecode:deep-interview` |
+| `deep-interview` | Socratic deep interview | `/deep-interview` |
 | `sciomc` | Parallel scientist agent orchestration | `/oh-my-claudecode:sciomc` |
 | `external-context` | Parallel document-specialist research | `/oh-my-claudecode:external-context` |
 | `ai-slop-cleaner` | Clean AI expression patterns | `/oh-my-claudecode:ai-slop-cleaner` |

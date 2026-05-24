@@ -22,6 +22,80 @@ export const REPO_OWNER = 'Yeachan-Heo';
 export const REPO_NAME = 'oh-my-claudecode';
 export const GITHUB_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 export const GITHUB_RAW_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}`;
+const CLAUDE_CODE_NPM_PACKAGE = '@anthropic-ai/claude-code';
+function npmExecOptions(verbose = false) {
+    return {
+        encoding: 'utf-8',
+        stdio: verbose ? 'inherit' : 'pipe',
+        timeout: 120000,
+        ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+    };
+}
+function assertSafeNpmPackageSpec(packageSpec) {
+    if (!/^[A-Za-z0-9@._~+/-]+$/.test(packageSpec)) {
+        throw new Error(`Unsafe npm package spec: ${packageSpec}`);
+    }
+}
+function npmInstallGlobalPackage(packageSpec, verbose = false) {
+    assertSafeNpmPackageSpec(packageSpec);
+    if (process.platform === 'win32') {
+        execSync(`npm install -g ${packageSpec}`, npmExecOptions(verbose));
+        return;
+    }
+    execFileSync('npm', ['install', '-g', packageSpec], npmExecOptions(verbose));
+}
+function detectGlobalClaudeCodeInstall() {
+    try {
+        const npmRoot = String(execSync('npm root -g', {
+            encoding: 'utf-8',
+            stdio: 'pipe',
+            timeout: 10000,
+            ...(process.platform === 'win32' ? { windowsHide: true } : {}),
+        }) ?? '').trim();
+        if (!npmRoot) {
+            return { status: 'unknown', error: 'npm root -g returned an empty path' };
+        }
+        const packageJsonPath = join(npmRoot, '@anthropic-ai', 'claude-code', 'package.json');
+        if (!existsSync(packageJsonPath)) {
+            return { status: 'absent' };
+        }
+        const packageJson = JSON.parse(String(readFileSync(packageJsonPath, 'utf-8') ?? ''));
+        return {
+            status: 'present',
+            version: typeof packageJson.version === 'string' && packageJson.version.trim()
+                ? packageJson.version.trim()
+                : undefined,
+        };
+    }
+    catch (error) {
+        return {
+            status: 'unknown',
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+function restoreGlobalClaudeCodeIfNeeded(beforeUpdate, verbose = false) {
+    if (beforeUpdate.status !== 'present') {
+        return { restored: false };
+    }
+    if (detectGlobalClaudeCodeInstall().status === 'present') {
+        return { restored: false };
+    }
+    const versionSuffix = beforeUpdate.version ? `@${beforeUpdate.version}` : '@latest';
+    const packageSpec = `${CLAUDE_CODE_NPM_PACKAGE}${versionSuffix}`;
+    if (verbose) {
+        console.log(`[omc update] Restoring global ${packageSpec} after npm update...`);
+    }
+    npmInstallGlobalPackage(packageSpec, verbose);
+    const afterRestore = detectGlobalClaudeCodeInstall();
+    if (afterRestore.status !== 'present') {
+        throw new Error(`Global ${CLAUDE_CODE_NPM_PACKAGE} was present before update but is still missing after restore`);
+    }
+    if (verbose) {
+        console.log(`[omc update] Restored global ${CLAUDE_CODE_NPM_PACKAGE}`);
+    }
+    return { restored: true };
+}
 /**
  * Best-effort sync of the Claude Code marketplace clone.
  * The marketplace clone at ~/.claude/plugins/marketplaces/omc/ is used by
@@ -299,15 +373,63 @@ export function updateLastCheckTime() {
         saveVersionMetadata(current);
     }
 }
+function getGitHubUpdateToken() {
+    const token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+    return token || null;
+}
+function getGitHubReleaseHeaders() {
+    const headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'oh-my-claudecode-updater'
+    };
+    const token = getGitHubUpdateToken();
+    if (token) {
+        headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+}
+function getHeader(response, name) {
+    return response.headers?.get(name) ?? response.headers?.get(name.toLowerCase()) ?? null;
+}
+function formatRateLimitReset(resetHeader) {
+    if (!resetHeader) {
+        return null;
+    }
+    const resetSeconds = Number.parseInt(resetHeader, 10);
+    if (!Number.isFinite(resetSeconds) || resetSeconds <= 0) {
+        return null;
+    }
+    return new Date(resetSeconds * 1000).toISOString();
+}
+async function formatGitHubReleaseFetchError(response, usedToken) {
+    let body = '';
+    try {
+        body = await response.text();
+    }
+    catch {
+        body = '';
+    }
+    const remaining = getHeader(response, 'x-ratelimit-remaining');
+    const resetAt = formatRateLimitReset(getHeader(response, 'x-ratelimit-reset'));
+    const bodyLooksRateLimited = /rate limit|api rate limit|secondary rate/i.test(body);
+    const isRateLimited = response.status === 429 ||
+        (response.status === 403 && (remaining === '0' || bodyLooksRateLimited));
+    if (!isRateLimited) {
+        return `Failed to fetch release info: ${response.status} ${response.statusText}`;
+    }
+    const retrySuffix = resetAt ? ` Try again after ${resetAt}.` : '';
+    const authHint = usedToken
+        ? 'The configured GitHub token appears to be rate limited; verify the token or try again later.'
+        : 'Set GH_TOKEN or GITHUB_TOKEN to use authenticated GitHub API requests and increase rate limits.';
+    return `Failed to fetch release info: GitHub API rate limit exceeded (${response.status} ${response.statusText}). ${authHint}${retrySuffix}`;
+}
 /**
  * Fetch the latest release from GitHub
  */
 export async function fetchLatestRelease() {
+    const usedToken = getGitHubUpdateToken() !== null;
     const response = await fetch(`${GITHUB_API_URL}/releases/latest`, {
-        headers: {
-            'Accept': 'application/vnd.github.v3+json',
-            'User-Agent': 'oh-my-claudecode-updater'
-        }
+        headers: getGitHubReleaseHeaders()
     });
     if (response.status === 404) {
         // No releases found - try to get version from package.json in repo
@@ -331,7 +453,7 @@ export async function fetchLatestRelease() {
         throw new Error('No releases found and could not fetch package.json');
     }
     if (!response.ok) {
-        throw new Error(`Failed to fetch release info: ${response.status} ${response.statusText}`);
+        throw new Error(await formatGitHubReleaseFetchError(response, usedToken));
     }
     return await response.json();
 }
@@ -506,14 +628,22 @@ export async function performUpdate(options) {
         // Fetch the latest release to get the version
         const release = await fetchLatestRelease();
         const newVersion = release.tag_name.replace(/^v/, '');
+        const claudeCodeBeforeUpdate = detectGlobalClaudeCodeInstall();
         // Use npm for updates on all platforms (install.sh was removed)
         try {
-            execSync('npm install -g oh-my-claude-sisyphus@latest', {
-                encoding: 'utf-8',
-                stdio: options?.verbose ? 'inherit' : 'pipe',
-                timeout: 120000, // 2 minute timeout for npm
-                ...(process.platform === 'win32' ? { windowsHide: true } : {})
-            });
+            execSync('npm install -g oh-my-claude-sisyphus@latest', npmExecOptions(options?.verbose ?? false));
+            try {
+                restoreGlobalClaudeCodeIfNeeded(claudeCodeBeforeUpdate, options?.verbose ?? false);
+            }
+            catch (restoreError) {
+                return {
+                    success: false,
+                    previousVersion,
+                    newVersion,
+                    message: `Updated to ${newVersion}, but failed to restore global ${CLAUDE_CODE_NPM_PACKAGE}`,
+                    errors: [restoreError instanceof Error ? restoreError.message : String(restoreError)],
+                };
+            }
             // Sync Claude Code marketplace clone so plugin cache picks up new version (#506)
             const marketplaceSync = syncMarketplaceClone(options?.verbose ?? false);
             if (!marketplaceSync.ok && options?.verbose) {
