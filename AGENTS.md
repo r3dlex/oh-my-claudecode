@@ -404,3 +404,8 @@ Run `omc setup` to install all components. Run `omc doctor` to verify installati
 - Configuration changes must be backward-compatible or include migration notes.
 - MCP tool definitions must validate inputs and handle timeouts gracefully.
 - Agent orchestration changes: verify state machine transitions are complete and recoverable.
+
+<!-- v3-ai-sdlc-init:start -->
+## AI SDLC v3
+This repo follows the v3 AI-SDLC layout. See `.ai/matrix.json`, `.memory/human-override/`, and `docs/architecture/adr/`. Modules at `r3dlex/skills/ai-sdlc-init/modules/`.
+<!-- v3-ai-sdlc-init:end -->
