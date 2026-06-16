@@ -46,6 +46,8 @@ function runPreToolEnforcerWithEnv(input, env = {}) {
             ANTHROPIC_DEFAULT_HAIKU_MODEL: '',
             ANTHROPIC_DEFAULT_SONNET_MODEL: '',
             ANTHROPIC_DEFAULT_OPUS_MODEL: '',
+            CLAUDE_CODE_BEDROCK_FABLE_MODEL: '',
+            ANTHROPIC_DEFAULT_FABLE_MODEL: '',
             ...env,
         },
     });
@@ -64,6 +66,110 @@ function writeTranscriptWithContext(filePath, contextWindow, inputTokens) {
     });
     writeFileSync(filePath, `${line}\n`, 'utf-8');
 }
+describe('pre-tool-enforcer advisory throttling (issue #3163)', () => {
+    let tempDir;
+    beforeEach(() => {
+        tempDir = mkdtempSync(join(tmpdir(), 'pre-tool-enforcer-advisory-throttle-'));
+    });
+    afterEach(() => {
+        rmSync(tempDir, { recursive: true, force: true });
+    });
+    function runWithThrottle(toolName, nowMs = '1000') {
+        return runPreToolEnforcerWithEnv({
+            tool_name: toolName,
+            cwd: tempDir,
+            session_id: 'session-3163',
+        }, {
+            OMC_PRE_TOOL_ADVISORY_COOLDOWN_MS: '5000',
+            OMC_PRE_TOOL_ADVISORY_NOW_MS: nowMs,
+        });
+    }
+    it('emits the first advisory and suppresses an immediate repeated identical advisory', () => {
+        const first = runWithThrottle('Bash');
+        const repeated = runWithThrottle('Bash');
+        expect(first.continue).toBe(true);
+        expect(first.hookSpecificOutput.additionalContext).toContain('Use parallel execution for independent tasks');
+        expect(repeated).toEqual({ continue: true, suppressOutput: true });
+    });
+    it('still emits a different advisory while the previous advisory is cooling down', () => {
+        const first = runWithThrottle('Bash');
+        const different = runWithThrottle('Edit');
+        expect(first.hookSpecificOutput.additionalContext).toContain('Use parallel execution for independent tasks');
+        expect(different.hookSpecificOutput.additionalContext).toContain('Verify changes work after editing');
+    });
+    it('does not throttle repeated hard-gate denials', () => {
+        const sessionId = 'session-3163';
+        writeJson(join(tempDir, '.omc', 'state', 'sessions', sessionId, 'ultragoal-state.json'), {
+            active: true,
+            session_id: sessionId,
+            project_path: tempDir,
+            objective: 'complete the aggregate ultragoal',
+            last_checked_at: new Date().toISOString(),
+        });
+        const input = {
+            tool_name: 'Bash',
+            cwd: tempDir,
+            session_id: sessionId,
+            tool_input: { command: 'echo safe' },
+        };
+        const env = {
+            OMC_PRE_TOOL_ADVISORY_COOLDOWN_MS: '5000',
+            OMC_PRE_TOOL_ADVISORY_NOW_MS: '1000',
+        };
+        const first = runPreToolEnforcerWithEnv(input, env);
+        const repeated = runPreToolEnforcerWithEnv(input, env);
+        for (const output of [first, repeated]) {
+            const hookSpecificOutput = output.hookSpecificOutput;
+            expect(output.continue).toBe(true);
+            expect(hookSpecificOutput.permissionDecision).toBe('deny');
+            expect(hookSpecificOutput.permissionDecisionReason).toContain('[ULTRAGOAL /GOAL REQUIRED]');
+        }
+    });
+    it('uses deterministic cooldown interval boundaries', () => {
+        const first = runWithThrottle('Bash', '1000');
+        const beforeCooldown = runWithThrottle('Bash', '5999');
+        const atCooldown = runWithThrottle('Bash', '6000');
+        expect(first.hookSpecificOutput.additionalContext).toContain('Use parallel execution for independent tasks');
+        expect(beforeCooldown).toEqual({ continue: true, suppressOutput: true });
+        expect(atCooldown.hookSpecificOutput.additionalContext).toContain('Use parallel execution for independent tasks');
+    });
+    it('does not let a future throttle timestamp suppress an advisory', () => {
+        runWithThrottle('Bash', '10000');
+        const output = runWithThrottle('Bash', '1000');
+        expect(output.hookSpecificOutput.additionalContext).toContain('Use parallel execution for independent tasks');
+    });
+    it('keeps advisory throttle state capped after adding a new entry', () => {
+        const sessionId = 'session-3163';
+        const throttlePath = join(tempDir, '.omc', 'state', 'sessions', sessionId, 'pre-tool-advisory-throttle.json');
+        const entries = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [
+            `old-${index}`,
+            {
+                last_emitted_at_ms: 10_000 - index,
+                message: `old message ${index}`,
+            },
+        ]));
+        writeJson(throttlePath, { version: 1, entries });
+        runWithThrottle('Bash', '20000');
+        const state = JSON.parse(readFileSync(throttlePath, 'utf-8'));
+        expect(Object.keys(state.entries)).toHaveLength(100);
+    });
+    it('prunes future throttle entries so they cannot consume the cap', () => {
+        const sessionId = 'session-3163';
+        const throttlePath = join(tempDir, '.omc', 'state', 'sessions', sessionId, 'pre-tool-advisory-throttle.json');
+        const entries = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [
+            `future-${index}`,
+            {
+                last_emitted_at_ms: 999_000 + index,
+                message: `future message ${index}`,
+            },
+        ]));
+        writeJson(throttlePath, { version: 1, entries });
+        runWithThrottle('Bash', '20000');
+        const state = JSON.parse(readFileSync(throttlePath, 'utf-8'));
+        expect(Object.keys(state.entries)).toHaveLength(1);
+        expect(Object.values(state.entries)[0].last_emitted_at_ms).toBe(20_000);
+    });
+});
 describe('pre-tool-enforcer fallback gating (issue #970)', () => {
     let tempDir;
     beforeEach(() => {
@@ -798,6 +904,48 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         expect(output.continue).toBe(true);
         expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
     });
+    it('allows tier alias "fable" via ANTHROPIC_DEFAULT_FABLE_MODEL without OMC_SUBAGENT_MODEL (issue #3246)', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'fable' },
+            cwd: tempDir,
+            session_id: 'session-tier-default-fable',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_FABLE_MODEL: 'global.anthropic.claude-fable-5-v1',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('resolves tier alias "fable" via CLAUDE_CODE_BEDROCK_FABLE_MODEL (issue #3246)', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', model: 'fable' },
+            cwd: tempDir,
+            session_id: 'session-tier-fable-cc-bedrock-env',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            CLAUDE_CODE_BEDROCK_FABLE_MODEL: 'us.anthropic.claude-fable-5-v1:0',
+        });
+        expect(output.continue).toBe(true);
+        expect(JSON.stringify(output)).not.toContain('MODEL ROUTING');
+    });
+    it('blocks tier alias "fable" when no fable model env is configured (issue #3246)', () => {
+        const output = runPreToolEnforcerWithEnv({
+            tool_name: 'Agent',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', model: 'fable' },
+            cwd: tempDir,
+            session_id: 'session-tier-fable-no-env',
+        }, {
+            OMC_ROUTING_FORCE_INHERIT: 'true',
+            OMC_SUBAGENT_MODEL: '',
+            ANTHROPIC_DEFAULT_FABLE_MODEL: '',
+        });
+        const hookOutput = output.hookSpecificOutput;
+        expect(hookOutput.permissionDecisionReason).toContain('MODEL ROUTING');
+    });
     it.each([
         ['sonnet', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'glm-5.1:cloud', 'session-tier-proxy-sonnet'],
         ['opus', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'glm-5.1:cloud', 'session-tier-proxy-opus'],
@@ -1433,6 +1581,258 @@ describe('pre-tool-enforcer fallback gating (issue #970)', () => {
         });
         expect(output).toEqual({ continue: true, suppressOutput: true });
         expect(existsSync(join(tempDir, '.omc', 'state', 'sessions', sessionId, 'skill-active-state.json'))).toBe(false);
+    });
+});
+// === Force-agent-delegation tests (issue #3095) ===
+describe('pre-tool-enforcer force-agent-delegation enforcement', () => {
+    let tempDir;
+    beforeEach(() => {
+        tempDir = mkdtempSync(join(tmpdir(), 'pre-tool-enforcer-fad-'));
+    });
+    afterEach(() => {
+        rmSync(tempDir, { recursive: true, force: true });
+    });
+    function writeDelegationConfig(rules, enforce = true) {
+        writeJson(join(tempDir, '.omc', 'config.json'), {
+            routing: {
+                forceDelegation: { enforce, rules },
+            },
+        });
+    }
+    it('does nothing when force-delegation config is absent (default off)', () => {
+        for (let i = 0; i < 5; i++) {
+            const output = runPreToolEnforcer({
+                tool_name: 'Read',
+                toolInput: { file_path: `${tempDir}/file-${i}.ts` },
+                cwd: tempDir,
+                session_id: 'session-fad-no-config',
+            });
+            expect(output.continue).toBe(true);
+            const hookOutput = output.hookSpecificOutput || {};
+            expect(hookOutput.permissionDecision).toBeUndefined();
+        }
+    });
+    it('does nothing when enforce: false even if rules are defined', () => {
+        writeDelegationConfig([{ pattern: 'Read', threshold: { count: 2, windowSeconds: 60 } }], false);
+        for (let i = 0; i < 5; i++) {
+            const output = runPreToolEnforcer({
+                tool_name: 'Read',
+                toolInput: { file_path: `${tempDir}/file-${i}.ts` },
+                cwd: tempDir,
+                session_id: 'session-fad-disabled',
+            });
+            expect(output.continue).toBe(true);
+            const hookOutput = output.hookSpecificOutput || {};
+            expect(hookOutput.permissionDecision).toBeUndefined();
+        }
+    });
+    it('allows tool calls under the configured threshold', () => {
+        writeDelegationConfig([
+            { pattern: 'Read', threshold: { count: 5, windowSeconds: 60 } },
+        ]);
+        for (let i = 0; i < 4; i++) {
+            const output = runPreToolEnforcer({
+                tool_name: 'Read',
+                toolInput: { file_path: `${tempDir}/file-${i}.ts` },
+                cwd: tempDir,
+                session_id: 'session-fad-under',
+            });
+            const hookOutput = output.hookSpecificOutput || {};
+            expect(hookOutput.permissionDecision).toBeUndefined();
+        }
+    });
+    it('blocks the call that crosses the threshold and surfaces the configured deny message', () => {
+        const denyMessage = 'Too many Reads — spawn Agent(subagent_type=\'oh-my-claudecode:explore\', model=\'haiku\'). Bypass: ALLOW_RAW_READ=1.';
+        writeDelegationConfig([
+            {
+                pattern: 'Read',
+                threshold: { count: 3, windowSeconds: 60 },
+                denyMessage,
+                bypassEnv: 'ALLOW_RAW_READ',
+            },
+        ]);
+        let lastOutput = {};
+        for (let i = 0; i < 3; i++) {
+            lastOutput = runPreToolEnforcer({
+                tool_name: 'Read',
+                toolInput: { file_path: `${tempDir}/file-${i}.ts` },
+                cwd: tempDir,
+                session_id: 'session-fad-block',
+            });
+        }
+        const hookOutput = lastOutput.hookSpecificOutput;
+        expect(lastOutput.continue).toBe(true);
+        expect(hookOutput.hookEventName).toBe('PreToolUse');
+        expect(hookOutput.permissionDecision).toBe('deny');
+        expect(hookOutput.permissionDecisionReason).toBe(denyMessage);
+    });
+    it('respects the per-rule bypass env var', () => {
+        writeDelegationConfig([
+            {
+                pattern: 'Read',
+                threshold: { count: 2, windowSeconds: 60 },
+                bypassEnv: 'ALLOW_RAW_READ',
+            },
+        ]);
+        for (let i = 0; i < 5; i++) {
+            const output = runPreToolEnforcerWithEnv({
+                tool_name: 'Read',
+                toolInput: { file_path: `${tempDir}/file-${i}.ts` },
+                cwd: tempDir,
+                session_id: 'session-fad-bypass',
+            }, { ALLOW_RAW_READ: '1' });
+            const hookOutput = output.hookSpecificOutput || {};
+            expect(hookOutput.permissionDecision).toBeUndefined();
+        }
+    });
+    it('matches only the configured pattern and ignores other tools', () => {
+        writeDelegationConfig([
+            { pattern: 'Read', threshold: { count: 2, windowSeconds: 60 } },
+        ]);
+        for (let i = 0; i < 5; i++) {
+            const output = runPreToolEnforcer({
+                tool_name: 'Bash',
+                toolInput: { command: `echo ${i}` },
+                cwd: tempDir,
+                session_id: 'session-fad-other-tool',
+            });
+            const hookOutput = output.hookSpecificOutput || {};
+            expect(hookOutput.permissionDecision).toBeUndefined();
+        }
+    });
+    it('supports alternation patterns for Read|Grep|Glob', () => {
+        writeDelegationConfig([
+            {
+                pattern: 'Read|Grep|Glob',
+                threshold: { count: 3, windowSeconds: 60 },
+                denyMessage: 'Investigation budget exhausted — delegate to explore agent.',
+            },
+        ]);
+        runPreToolEnforcer({ tool_name: 'Read', cwd: tempDir, session_id: 'session-fad-alt' });
+        runPreToolEnforcer({ tool_name: 'Grep', cwd: tempDir, session_id: 'session-fad-alt', toolInput: { pattern: 'foo' } });
+        const third = runPreToolEnforcer({
+            tool_name: 'Glob',
+            cwd: tempDir,
+            session_id: 'session-fad-alt',
+            toolInput: { pattern: '**/*.ts' },
+        });
+        const hookOutput = third.hookSpecificOutput;
+        expect(hookOutput.permissionDecision).toBe('deny');
+        expect(String(hookOutput.permissionDecisionReason)).toContain('Investigation budget');
+    });
+});
+describe('pre-tool-enforcer agents.<name>.model injection (issue #3242)', () => {
+    let tempDir;
+    let xdgConfigHome;
+    beforeEach(() => {
+        tempDir = mkdtempSync(join(tmpdir(), 'pre-tool-enforcer-agent-model-'));
+        xdgConfigHome = join(tempDir, 'xdg-config');
+        mkdirSync(join(xdgConfigHome, 'claude-omc'), { recursive: true });
+    });
+    afterEach(() => {
+        rmSync(tempDir, { recursive: true, force: true });
+    });
+    function writeUserConfig(jsonc) {
+        writeFileSync(join(xdgConfigHome, 'claude-omc', 'config.jsonc'), jsonc);
+    }
+    function writeProjectConfig(jsonc) {
+        const dir = join(tempDir, '.claude');
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'omc.jsonc'), jsonc);
+    }
+    function run(input, env = {}) {
+        return runPreToolEnforcerWithEnv({ cwd: tempDir, ...input }, { XDG_CONFIG_HOME: xdgConfigHome, OMC_ROUTING_FORCE_INHERIT: 'false', ...env });
+    }
+    function updatedModel(output) {
+        const hookOutput = output.hookSpecificOutput;
+        const updatedInput = hookOutput?.updatedInput;
+        return updatedInput?.model;
+    }
+    it('injects configured model via updatedInput for native Task calls without a model param', () => {
+        writeUserConfig('{ "agents": { "explore": { "model": "sonnet" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:explore', prompt: 'x', description: 'find files' },
+            session_id: 'session-3242-inject',
+        });
+        expect(updatedModel(output)).toBe('sonnet');
+    });
+    it('does not inject when no per-agent override is configured', () => {
+        writeUserConfig('{ "agents": {} }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:architect', prompt: 'x', description: 'design' },
+            session_id: 'session-3242-noop',
+        });
+        expect(updatedModel(output)).toBeUndefined();
+    });
+    it('preserves an explicit model param and does not inject', () => {
+        writeUserConfig('{ "agents": { "explore": { "model": "sonnet" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:explore', model: 'opus', prompt: 'x', description: 'd' },
+            session_id: 'session-3242-explicit',
+        });
+        expect(updatedModel(output)).toBeUndefined();
+    });
+    it('normalizes full Claude model IDs to a CC tier alias', () => {
+        writeUserConfig('{ "agents": { "executor": { "model": "claude-opus-4-6" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:executor', prompt: 'x', description: 'd' },
+            session_id: 'session-3242-normalize',
+        });
+        expect(updatedModel(output)).toBe('opus');
+    });
+    it('lets project config override user config', () => {
+        writeUserConfig('{ "agents": { "explore": { "model": "haiku" } } }');
+        writeProjectConfig('{ "agents": { "explore": { "model": "sonnet" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:explore', prompt: 'x', description: 'd' },
+            session_id: 'session-3242-precedence',
+        });
+        expect(updatedModel(output)).toBe('sonnet');
+    });
+    it('resolves deprecated subagent aliases to the canonical config key', () => {
+        writeUserConfig('{ "agents": { "codeReviewer": { "model": "opus" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:reviewer', prompt: 'x', description: 'd' },
+            session_id: 'session-3242-alias',
+        });
+        expect(updatedModel(output)).toBe('opus');
+    });
+    it('does not inject under forceInherit even when an override is configured', () => {
+        writeUserConfig('{ "agents": { "explore": { "model": "sonnet" } } }');
+        const output = run({
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:explore', prompt: 'x', description: 'd' },
+            session_id: 'session-3242-force-inherit',
+        }, { OMC_ROUTING_FORCE_INHERIT: 'true' });
+        expect(updatedModel(output)).toBeUndefined();
+    });
+    it('still injects the configured model when the advisory message is throttled (suppressOutput)', () => {
+        writeUserConfig('{ "agents": { "explore": { "model": "sonnet" } } }');
+        const input = {
+            tool_name: 'Task',
+            toolInput: { subagent_type: 'oh-my-claudecode:explore', prompt: 'x', description: 'find files' },
+            session_id: 'session-3242-throttle',
+        };
+        // Pin the throttle clock so the second identical call lands inside the cooldown
+        // window and is advisory-throttled.
+        const throttleEnv = {
+            OMC_PRE_TOOL_ADVISORY_COOLDOWN_MS: '5000',
+            OMC_PRE_TOOL_ADVISORY_NOW_MS: '1000',
+        };
+        const first = run(input, throttleEnv);
+        const throttled = run(input, throttleEnv);
+        // First call: advisory emitted alongside the injection.
+        expect(updatedModel(first)).toBe('sonnet');
+        // Second identical call: advisory suppressed, but the model injection MUST survive.
+        expect(throttled.suppressOutput).toBe(true);
+        expect(throttled.hookSpecificOutput).toBeDefined();
+        expect(updatedModel(throttled)).toBe('sonnet');
     });
 });
 //# sourceMappingURL=pre-tool-enforcer.test.js.map

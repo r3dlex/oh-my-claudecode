@@ -127,12 +127,12 @@ function resolveClaudeModel(
 /**
  * Resolve a user-supplied `model` value for an external provider worker.
  *
- * Tier names are Claude-centric and not meaningful for codex/gemini, so tier
- * input (or absent input) maps to the provider's builtin default. Only an
- * explicit non-tier model ID is passed through.
+ * Tier names are Claude-centric and not meaningful for codex/gemini/grok/cursor,
+ * so tier input (or absent input) maps to the provider's builtin default. Only
+ * an explicit non-tier model ID is passed through.
  */
 function resolveExternalModel(
-  provider: 'codex' | 'gemini',
+  provider: 'codex' | 'gemini' | 'grok' | 'cursor',
   raw: string | undefined,
   cfg: PluginConfig,
 ): string {
@@ -142,6 +142,12 @@ function resolveExternalModel(
   const defaults = cfg.externalModels?.defaults;
   if (provider === 'codex') {
     return defaults?.codexModel ?? BUILTIN_EXTERNAL_MODEL_DEFAULTS.codexModel;
+  }
+  if (provider === 'grok') {
+    return defaults?.grokModel ?? '';
+  }
+  if (provider === 'cursor') {
+    return '';
   }
   return defaults?.geminiModel ?? BUILTIN_EXTERNAL_MODEL_DEFAULTS.geminiModel;
 }

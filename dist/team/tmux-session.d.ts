@@ -47,6 +47,10 @@ export declare function resolveSupportedShellAffinity(shellPath?: string): Worke
  *   5. Fallback: /bin/sh
  */
 export declare function buildWorkerLaunchSpec(shellPath?: string): WorkerLaunchSpec;
+export interface WaitForShellReadyOptions {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+}
 export declare function buildWorkerStartCommand(config: WorkerPaneConfig): string;
 /** Validate tmux is available. Throws with install instructions if not. */
 export declare function validateTmux(hasTmuxContext?: boolean): void;
@@ -82,6 +86,17 @@ export declare function spawnBridgeInSession(tmuxSession: string, bridgeScriptPa
  * Layout: leader pane on the left, worker panes stacked vertically on the right.
  * IMPORTANT: Uses pane IDs (%N format) not pane indices for stable targeting.
  */
+/**
+ * Split a new worker pane off `splitTarget`, honoring the active multiplexer.
+ *
+ * Under cmux a worker MUST be a native cmux surface (UUID), not a tmux pane id
+ * (`%N`). Otherwise spawnWorkerInPane()/waitForShellReady() classify the worker
+ * as a tmux pane, poll tmux for shell readiness, and time out after 5s with
+ * `worker_start_shell_not_ready` — abandoning the worker's git worktree.
+ * createTeamSession() already branches this way for panes created up front; the
+ * on-demand worker spawns in both team runtimes must do the same. (#3267)
+ */
+export declare function splitTeamWorkerPane(splitTarget: string, direction: 'right' | 'down', cwd: string): Promise<string | null>;
 export declare function createTeamSession(teamName: string, workerCount: number, cwd: string, options?: CreateTeamSessionOptions): Promise<TeamSession>;
 /**
  * Spawn a CLI agent in a specific pane.
@@ -92,6 +107,7 @@ export declare function spawnWorkerInPane(sessionName: string, paneId: string, c
 export declare function captureTeamPane(paneId: string): Promise<string>;
 export declare function sendTeamPaneKey(paneId: string, key: string): Promise<void>;
 export declare function killTeamPane(paneId: string): Promise<void>;
+export declare function paneHasTrustPrompt(captured: string): boolean;
 export declare function paneHasActiveTask(captured: string): boolean;
 export declare function paneLooksReady(captured: string): boolean;
 export interface WaitForPaneReadyOptions {

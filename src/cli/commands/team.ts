@@ -21,11 +21,12 @@ import { loadConfig } from '../../config/loader.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmuxExec } from '../tmux-utils.js';
+import { getOmcRoot } from '../../lib/worktree-paths.js';
 
 const HELP_TOKENS = new Set(['--help', '-h', 'help']);
 const MIN_WORKER_COUNT = 1;
 const MAX_WORKER_COUNT = 20;
-const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini']);
+const VALID_TEAM_CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor']);
 const DEFAULT_TEAM_CLI_AGENT_TYPE: CliAgentType = 'claude';
 
 const TEAM_HELP = `
@@ -40,6 +41,7 @@ Examples:
   omc team 2:codex:architect "design auth system"
   omc team 1:gemini:executor "implement feature"
   omc team 1:codex,1:gemini "compare approaches"
+  omc team 1:cursor:executor "apply the implementation"
   omc team 2:codex "review auth flow" --new-window
   omc team status fix-failing-tests
   omc team shutdown fix-failing-tests
@@ -245,7 +247,7 @@ function slugifyTask(task: string): string {
 
 export function resolveAvailableTeamName(baseName: string, cwd: string): string {
   const sanitizedBase = slugifyTask(baseName);
-  const stateRoot = join(cwd, '.omc', 'state', 'team');
+  const stateRoot = join(getOmcRoot(cwd), 'state', 'team');
   const teamDir = (name: string) => join(stateRoot, name);
   if (!existsSync(teamDir(sanitizedBase))) return sanitizedBase;
 
@@ -354,6 +356,13 @@ function normalizeWorkerSpecSegment(match: RegExpMatchArray): NormalizedWorkerSp
   }
 
   if (explicitRole) {
+    if (!VALID_TEAM_CLI_AGENT_TYPES.has(token)) {
+      throw new Error(
+        `Invalid agent type "${token}" in worker spec "${match[0]}". ` +
+        `Expected one of: ${[...VALID_TEAM_CLI_AGENT_TYPES].join(', ')}. ` +
+        `For a role-only shorthand on the default agent, use "${count}:${explicitRole}".`,
+      );
+    }
     return { count, agentType: token, role: explicitRole };
   }
 
@@ -451,6 +460,17 @@ export function parseTeamArgs(tokens: string[], defaultAgentType: string = 'clau
     }
   }
 
+  // A token that clearly looks like a worker spec ("N:<word>...") but failed to
+  // fully parse must fail loudly rather than being silently swallowed into the
+  // task text, which would default the team to claude workers (see #3224).
+  if (!explicitWorkerSpec && /^\d+:[a-z]/i.test(first)) {
+    throw new Error(
+      `Invalid worker spec "${first}". Expected "N:agent-type[:role]" ` +
+      `(e.g. "3:codex" or "2:codex:architect"), optionally comma-separated ` +
+      `(e.g. "1:codex,1:gemini"). Agent type must be one of: ${[...VALID_TEAM_CLI_AGENT_TYPES].join(', ')}.`,
+    );
+  }
+
   // Default: 3 workers with configured default agent type (falls back to claude)
   if (agentTypes.length === 0) {
     agentTypes = Array.from({ length: workerCount }, () => normalizedDefaultAgentType);
@@ -496,9 +516,18 @@ export function buildTeamLaunchTasks(
   effectiveWorkerCount: number,
 ): TeamLaunchTask[] {
   const tasks: TeamLaunchTask[] = [];
+
+  // Numbered/bulleted lists are explicit pre-authored scopes the user typed out,
+  // so they must line up with an explicit worker count. A `conjunction` split is
+  // only a heuristic guess at parallelism inside free-form prose (e.g.
+  // "Read X and execute it then commit"), so it must never reject or reshape an
+  // explicit worker spec — every worker just receives the full launch text. (#3267)
+  const isPreauthoredScopeList = decomposition.strategy === 'numbered'
+    || decomposition.strategy === 'bulleted';
+
   if (parsed.explicitWorkerSpec
     && !parsed.noDecompose
-    && decomposition.strategy !== 'atomic'
+    && isPreauthoredScopeList
     && decomposition.subtasks.length > 1
     && decomposition.subtasks.length !== effectiveWorkerCount) {
     throw new Error(
@@ -509,7 +538,8 @@ export function buildTeamLaunchTasks(
   const canUseDecomposition = !parsed.noDecompose
     && decomposition.strategy !== 'atomic'
     && decomposition.subtasks.length > 1
-    && (!parsed.explicitWorkerSpec || decomposition.subtasks.length === effectiveWorkerCount);
+    && (!parsed.explicitWorkerSpec
+      || (isPreauthoredScopeList && decomposition.subtasks.length === effectiveWorkerCount));
 
   for (let i = 0; i < effectiveWorkerCount; i++) {
     const workerSpec = parsed.workerSpecs[i];

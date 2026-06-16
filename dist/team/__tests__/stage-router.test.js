@@ -14,7 +14,7 @@ const ENV_KEYS = [
     'ANTHROPIC_DEFAULT_SONNET_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL',
 ];
-let savedEnv = {};
+const savedEnv = {};
 beforeAll(() => {
     for (const key of ENV_KEYS) {
         savedEnv[key] = process.env[key];
@@ -77,6 +77,56 @@ describe('stage-router resolveRoleAssignment', () => {
             expect(out.provider).toBe('gemini');
             expect(out.model).toBe(BUILTIN_EXTERNAL_MODEL_DEFAULTS.geminiModel);
             expect(out.agent).toBe('codeReviewer');
+        });
+        it('respects provider=grok and resolves to empty model (no Claude fallthrough) when omitted', () => {
+            const cfg = {
+                team: { roleRouting: { 'code-reviewer': { provider: 'grok' } } },
+            };
+            const out = resolveRoleAssignment('code-reviewer', cfg);
+            expect(out.provider).toBe('grok');
+            // grok has no builtin default model and none configured → resolves to ''
+            // (NOT a Claude tier model id).
+            expect(out.model).toBe('');
+            expect(out.model).not.toBe(CLAUDE_FAMILY_DEFAULTS.OPUS);
+            expect(out.agent).toBe('codeReviewer');
+        });
+        it('respects provider=grok with explicit model passthrough', () => {
+            const cfg = {
+                team: { roleRouting: { critic: { provider: 'grok', model: 'grok-4-fast' } } },
+            };
+            const out = resolveRoleAssignment('critic', cfg);
+            expect(out.provider).toBe('grok');
+            expect(out.model).toBe('grok-4-fast');
+            expect(out.agent).toBe('critic');
+        });
+        it('respects provider=cursor and resolves to empty model (cursor-agent owns model selection)', () => {
+            const cfg = {
+                team: { roleRouting: { executor: { provider: 'cursor' } } },
+            };
+            const out = resolveRoleAssignment('executor', cfg);
+            expect(out.provider).toBe('cursor');
+            expect(out.model).toBe('');
+            expect(out.model).not.toBe(CLAUDE_FAMILY_DEFAULTS.OPUS);
+            expect(out.agent).toBe('executor');
+        });
+        it('grok resolves configured externalModels.defaults.grokModel when model omitted', () => {
+            const cfg = {
+                externalModels: { defaults: { grokModel: 'grok-code-fast-1' } },
+                team: { roleRouting: { 'code-reviewer': { provider: 'grok' } } },
+            };
+            const out = resolveRoleAssignment('code-reviewer', cfg);
+            expect(out.provider).toBe('grok');
+            expect(out.model).toBe('grok-code-fast-1');
+        });
+        it('tier name on grok provider falls back to provider default (tiers are claude-centric)', () => {
+            const cfg = {
+                team: { roleRouting: { executor: { provider: 'grok', model: 'HIGH' } } },
+            };
+            const out = resolveRoleAssignment('executor', cfg);
+            expect(out.provider).toBe('grok');
+            // tier names are claude-centric → grok ignores them and uses its (empty) default
+            expect(out.model).toBe('');
+            expect(out.model).not.toBe(CLAUDE_FAMILY_DEFAULTS.OPUS);
         });
         it('resolves tier name (HIGH) into Claude opus model for claude provider', () => {
             const cfg = {

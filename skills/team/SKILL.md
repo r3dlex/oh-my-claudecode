@@ -198,6 +198,17 @@ The lead writes handoffs to `.omc/handoffs/<stage-name>.md`.
 - **Cancel:** `/oh-my-claudecode:cancel` requests teammate shutdown, waits for responses (best effort), marks phase `cancelled` with `active=false`, captures cancellation metadata, then deletes team resources and clears/preserves Team state per policy. Handoff files in `.omc/handoffs/` are preserved for potential resume.
 - Terminal states are `complete`, `failed`, and `cancelled`.
 
+## Windows psmux tmux-compatible gate
+
+On native Windows, do **not** tell users that `/team` requires WSL or that tmux is unavailable until the actual tmux-compatible binary has been checked. Native [psmux](https://github.com/psmux/psmux) installs a `tmux`-compatible command (often `tmux` / `tmux.cmd`) and is a supported Team multiplexer.
+
+Before blocking or falling back on Windows:
+
+1. Check `tmux -V` (or the platform equivalent such as `where tmux` followed by `tmux -V`).
+2. Treat a successful psmux-backed `tmux -V` as tmux available.
+3. If psmux/tmux is available, continue the normal Team flow; do not emit WSL-required guidance.
+4. Only when no tmux-compatible binary is available, tell the user to install psmux for native Windows support or use WSL2 as an alternative.
+
 ## Workflow
 
 ### Phase 1: Parse Input
@@ -912,7 +923,7 @@ Optional settings live in `.claude/omc.jsonc` (project) or `~/.config/claude-omc
 ```
 
 - **ops.maxAgents** - Maximum teammates (default: 20)
-- **ops.defaultAgentType** - CLI provider when a `/team` invocation does not specify one (`claude` | `codex` | `gemini`, default: `claude`)
+- **ops.defaultAgentType** - CLI provider when a `/team` invocation does not specify one (`claude` | `codex` | `gemini` | `grok` | `cursor`, default: `claude`)
 - **ops.monitorIntervalMs** - How often to poll `TaskList` (default: 30s)
 - **ops.shutdownTimeoutMs** - How long to wait for shutdown responses (default: 15s)
 
@@ -922,7 +933,7 @@ Optional settings live in `.claude/omc.jsonc` (project) or `~/.config/claude-omc
 
 > **Scope:** Applies to `/team` only. Task-based delegation uses `delegationRouting` (see separate docs). The two systems coexist by design.
 
-Declare which provider (`claude`, `codex`, `gemini`) and which model tier should back each canonical role. Routing is resolved **once** at team creation and persisted in `TeamConfig.resolved_routing` — spawn, scale-up, and restart all read from the snapshot, so a role's worker CLI and model are stable for the lifetime of the team.
+Declare which provider (`claude`, `codex`, `gemini`, `grok`, `cursor`) and which model tier should back each canonical role. Routing is resolved **once** at team creation and persisted in `TeamConfig.resolved_routing` — spawn, scale-up, and restart all read from the snapshot, so a role's worker CLI and model are stable for the lifetime of the team.
 
 ### Example — user target mapping
 
@@ -935,6 +946,7 @@ Declare which provider (`claude`, `codex`, `gemini`) and which model tier should
       "planner": { "provider": "claude", "model": "HIGH" },
       "analyst": { "provider": "claude", "model": "HIGH" },
       "executor": { "provider": "claude", "model": "MEDIUM" },
+      "debugger": { "provider": "cursor" },
       "critic": { "provider": "codex" },
       "code-reviewer": { "provider": "gemini" },
       "test-engineer": { "provider": "gemini", "model": "MEDIUM" },
@@ -949,6 +961,7 @@ Declare which provider (`claude`, `codex`, `gemini`) and which model tier should
 | `planner`       | claude          | `HIGH` (opus)             |
 | `analyst`       | claude          | `HIGH` (opus)             |
 | `executor`      | claude          | `MEDIUM` (sonnet)         |
+| `debugger`      | cursor          | cursor-agent default      |
 | `critic`        | codex           | codex default             |
 | `code-reviewer` | gemini          | gemini default            |
 | `test-engineer` | gemini          | `MEDIUM` (sonnet)         |
@@ -961,11 +974,13 @@ User-friendly aliases normalize via `normalizeDelegationRole()` — e.g. `review
 
 ### Spec fields (`TeamRoleAssignmentSpec`)
 
-- **provider** — `"claude" | "codex" | "gemini"`. Omitted → defaults to `claude`.
+- **provider** — `"claude" | "codex" | "gemini" | "grok" | "cursor"`. Omitted → defaults to `claude`.
 - **model** — tier name (`"HIGH" | "MEDIUM" | "LOW"`) or an explicit model ID. Tiers resolve through `routing.tierModels`.
 - **agent** — optional Claude agent name (e.g. `"critic"`, `"executor"`). Only honored when the resolved provider is `claude`.
 
 `orchestrator` is pinned to `claude`; only `model` is user-configurable. Any other key on `orchestrator` is rejected by the validator.
+
+`cursor` launches `cursor-agent` as an interactive executor/refactor worker. Do not route reviewer/verdict roles (`critic`, `code-reviewer`, `security-reviewer`, `test-engineer`) to Cursor unless its CLI gains a compatible verdict-output mode; the runtime intentionally skips the structured verdict contract for Cursor panes.
 
 ### Env override
 
@@ -1062,3 +1077,10 @@ MCP workers can operate in isolated git worktrees to prevent file conflicts betw
 10. **Broadcast is expensive** -- Each broadcast sends a separate message to every teammate. Use `message` (DM) by default. Only broadcast for truly team-wide critical alerts.
 
 11. **CLI workers are one-shot, not persistent** -- Tmux CLI workers have full filesystem access and CAN make code changes. However, they run as autonomous one-shot jobs -- they cannot use TaskList/TaskUpdate/SendMessage. The lead must manage their lifecycle: write prompt_file, spawn CLI worker, read output_file, mark task complete. They don't participate in team communication like Claude teammates do.
+
+## Parallel session caveats
+
+- **Multi-repo workspace anchor:** drop a `.omc-workspace` marker at the parent directory so multiple sessions across sub-repos share one `.omc/`. Resolution order: `OMC_STATE_DIR > .omc-workspace > git > cwd`. See `docs/REFERENCE.md`.
+- **Session id source:** OMC_SESSION_ID env var wins in CLI contexts; hook payload data.session_id wins in hook contexts.
+- **Plan id (when applicable):** Team state is session-scoped. Team handoffs at `.omc/handoffs/` are shared by design (see Wave G in the workspace plan).
+- **Parallel verdict:** supported (session-scoped + shared handoffs by design)

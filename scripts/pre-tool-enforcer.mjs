@@ -7,13 +7,17 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { dirname, join, resolve } from 'path';
+import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getClaudeConfigDir } from './lib/config-dir.mjs';
 import { evaluateAgentHeavyPreflight } from './lib/pre-tool-enforcer-preflight.mjs';
+import { evaluateForceAgentDelegation } from './lib/force-agent-delegation-preflight.mjs';
 import { resolveOmcStateRoot } from './lib/state-root.mjs';
 import { readStdin } from './lib/stdin.mjs';
+import { resolveConfiguredAgentModel } from './lib/agent-model-config.mjs';
 
 // Inlined from src/config/models.ts — avoids a dist/ import so the hook works
 // before a build and stays consistent with the TypeScript source.
@@ -76,7 +80,7 @@ function acceptsProxyAnthropicDefaultTierValue(key, value) {
     && !isBedrockProviderEnv()
     && !isVertexProviderEnv();
 }
-const TIER_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
+const TIER_ALIASES = new Set(['sonnet', 'opus', 'haiku', 'fable']);
 function isTierAlias(modelId) {
   return TIER_ALIASES.has((modelId || '').toLowerCase());
 }
@@ -92,6 +96,7 @@ const TIER_TO_DEFAULT_ENV_KEYS = {
   haiku:  ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_HAIKU_MODEL',  'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
   sonnet: ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_SONNET_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
   opus:   ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_OPUS_MODEL',   'ANTHROPIC_DEFAULT_OPUS_MODEL'],
+  fable:  ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_FABLE_MODEL',  'ANTHROPIC_DEFAULT_FABLE_MODEL'],
 };
 function resolveTierAliasToSafeModel(tierAlias) {
   const keys = TIER_TO_DEFAULT_ENV_KEYS[(tierAlias || '').toLowerCase()];
@@ -109,13 +114,14 @@ function resolveTierAliasToSafeModel(tierAlias) {
   }
   return '';
 }
-/** Map a bare Anthropic model ID to its CC tier alias (sonnet/opus/haiku), or null if unrecognised. */
+/** Map a bare Anthropic model ID to its CC tier alias (sonnet/opus/haiku/fable), or null if unrecognised. */
 function normalizeToCcAlias(model) {
   if (!model) return null;
   const lower = model.toLowerCase();
   if (lower.includes('opus'))   return 'opus';
   if (lower.includes('sonnet')) return 'sonnet';
   if (lower.includes('haiku'))  return 'haiku';
+  if (lower.includes('fable'))  return 'fable';
   return null;
 }
 /**
@@ -306,6 +312,96 @@ function combineHookMessages(...messages) {
   return messages.filter(Boolean).join('\n\n');
 }
 
+
+const ADVISORY_THROTTLE_STATE_FILE = 'pre-tool-advisory-throttle.json';
+const ADVISORY_THROTTLE_MAX_ENTRIES = 100;
+const ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+const ADVISORY_THROTTLE_MIN_PRUNE_WINDOW_MS = 60 * 60 * 1000;
+
+function getAdvisoryThrottleCooldownMs() {
+  const raw = process.env.OMC_PRE_TOOL_ADVISORY_COOLDOWN_MS;
+  if (raw == null || raw === '') return ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS;
+  return Math.max(0, parsed);
+}
+
+function getAdvisoryThrottleNowMs() {
+  const raw = process.env.OMC_PRE_TOOL_ADVISORY_NOW_MS;
+  if (raw != null && raw !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function getAdvisoryThrottlePath(stateDir, sessionId) {
+  const safeSessionId = isValidSessionId(sessionId) ? sessionId : '';
+  return safeSessionId
+    ? join(stateDir, 'sessions', safeSessionId, ADVISORY_THROTTLE_STATE_FILE)
+    : join(stateDir, ADVISORY_THROTTLE_STATE_FILE);
+}
+
+function advisoryThrottleKey(message) {
+  return createHash('sha256').update(message).digest('hex');
+}
+
+function normalizeAdvisoryThrottleState(state) {
+  if (!state || typeof state !== 'object' || !state.entries || typeof state.entries !== 'object') {
+    return { version: 1, entries: {} };
+  }
+  return { ...state, version: 1, entries: state.entries };
+}
+
+function pruneAdvisoryThrottleEntries(entries, nowMs, cooldownMs) {
+  const pruneWindowMs = Math.max(cooldownMs * 2, ADVISORY_THROTTLE_MIN_PRUNE_WINDOW_MS);
+  const freshEntries = Object.entries(entries)
+    .filter(([, entry]) => {
+      const last = Number(entry?.last_emitted_at_ms);
+      return Number.isFinite(last) && last <= nowMs && nowMs - last <= pruneWindowMs;
+    })
+    .sort(([, a], [, b]) => Number(b?.last_emitted_at_ms || 0) - Number(a?.last_emitted_at_ms || 0))
+    .slice(0, ADVISORY_THROTTLE_MAX_ENTRIES);
+  return Object.fromEntries(freshEntries);
+}
+
+function shouldEmitAdvisoryMessage(stateDir, sessionId, message) {
+  const cooldownMs = getAdvisoryThrottleCooldownMs();
+  if (!message || cooldownMs <= 0) return true;
+
+  const nowMs = getAdvisoryThrottleNowMs();
+  const throttlePath = getAdvisoryThrottlePath(stateDir, sessionId);
+  const key = advisoryThrottleKey(message);
+
+  try {
+    const state = normalizeAdvisoryThrottleState(readJsonFile(throttlePath));
+    state.entries = pruneAdvisoryThrottleEntries(state.entries, nowMs, cooldownMs);
+
+    const previous = state.entries[key];
+    const previousMs = Number(previous?.last_emitted_at_ms);
+    const shouldEmit = !Number.isFinite(previousMs) || previousMs > nowMs || nowMs - previousMs >= cooldownMs;
+
+    if (shouldEmit) {
+      state.entries[key] = {
+        last_emitted_at_ms: nowMs,
+        message,
+      };
+      state.entries = pruneAdvisoryThrottleEntries(state.entries, nowMs, cooldownMs);
+      state.updated_at = new Date(nowMs).toISOString();
+      mkdirSync(dirname(throttlePath), { recursive: true });
+      const tmpPath = `${throttlePath}.tmp`;
+      writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+      renameSync(tmpPath, throttlePath);
+    }
+
+    return shouldEmit;
+  } catch {
+    // Fail open: advisory throttling must never silence safety output because
+    // state IO failed. The hook may repeat a nudge rather than risk hiding it.
+    return true;
+  }
+}
+
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const MODE_STATE_FILES = [
   'autopilot-state.json',
@@ -333,6 +429,67 @@ function getQuietLevel() {
   if (Number.isNaN(parsed)) return 0;
   return Math.max(0, parsed);
 }
+
+/**
+ * Resolve the .omc root directory for a given starting directory.
+ *
+ * Resolution order (mirrors src/lib/worktree-paths.ts getOmcRoot):
+ *   1) OMC_STATE_DIR env — log a warning and fall through (full project-id
+ *      derivation lives in the TS layer; use resolveOmcStateRoot() for async
+ *      TS-backed OMC_STATE_DIR support in main()).
+ *   2) Walk up from startDir looking for a .omc-workspace marker file.
+ *      The first directory containing that file is the workspace anchor.
+ *   3) git rev-parse --show-toplevel from startDir.
+ *   4) Fallback to startDir itself.
+ *
+ * @param {string} startDir - Directory to resolve from (usually cwd from hook payload)
+ * @returns {string} Absolute path to the .omc root directory
+ */
+function resolveOmcRoot(startDir) {
+  const dir = startDir || process.cwd();
+
+  // 1) OMC_STATE_DIR: full project-id derivation is TS-only; warn and fall through.
+  if (process.env.OMC_STATE_DIR) {
+    process.stderr.write(
+      '[omc] OMC_STATE_DIR is set; resolveOmcRoot() falling through to workspace-marker ' +
+      'resolution. Use resolveOmcStateRoot() for full OMC_STATE_DIR support.\n'
+    );
+  }
+
+  // 2) Walk up looking for .omc-workspace marker
+  try {
+    let cursor = resolve(dir);
+    const home = (() => { try { return resolve(homedir()); } catch { return null; } })();
+    while (true) {
+      if (existsSync(join(cursor, '.omc-workspace'))) {
+        return join(cursor, '.omc');
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) break;
+      if (home && cursor === home) break;
+      cursor = parent;
+    }
+  } catch {
+    // walk failed — continue to git fallback
+  }
+
+  // 3) git rev-parse --show-toplevel
+  try {
+    const top = execSync('git rev-parse --show-toplevel', {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim();
+    if (top) return join(top, '.omc');
+  } catch {
+    // not in a git repo — fall through
+  }
+
+  // 4) Fallback to startDir
+  return join(dir, '.omc');
+}
+
 
 /**
  * Resolve transcript path in worktree environments.
@@ -415,13 +572,14 @@ function getAgentTrackingInfo(stateDir) {
 }
 
 // Get todo status from project-local todos only
-function getTodoStatus(directory) {
+async function getTodoStatus(directory) {
   let pending = 0;
   let inProgress = 0;
 
   // Check project-local todos
+  const omcRoot = await resolveOmcStateRoot(directory);
   const localPaths = [
-    join(directory, '.omc', 'todos.json'),
+    join(omcRoot, 'todos.json'),
     join(directory, '.claude', 'todos.json')
   ];
 
@@ -1090,6 +1248,10 @@ async function main() {
 
     const modeActive = hasActiveMode(stateDir, sessionId);
 
+    // When set, replaces the Task/Agent tool input via hookSpecificOutput.updatedInput
+    // so a configured per-agent model (agents.<name>.model) is applied (issue #3242).
+    let updatedToolInput = null;
+
     // Force-inherit check: deny Task/Agent calls with invalid model param when forceInherit is
     // enabled (Bedrock, Vertex, CC Switch, etc.) - issues #1135, #1201, #1767, #1868
     //
@@ -1189,6 +1351,19 @@ async function main() {
         }
         // else: no model param and no [1m] on session model → normal forceInherit,
         // agents inherit the parent session's model cleanly.
+      } else if (!toolModel && toolInput.subagent_type) {
+        // Non-forceInherit: honor agents.<name>.model from config.jsonc for native
+        // Task/Agent calls without an explicit model param. Without this, Claude Code
+        // reads the static agents/*.md frontmatter and silently ignores the user's
+        // per-agent override (issue #3242). Inject the resolved tier alias via
+        // updatedInput so the spawned subagent runs on the configured model.
+        const configuredModel = resolveConfiguredAgentModel(toolInput.subagent_type, directory);
+        if (configuredModel && configuredModel !== 'inherit') {
+          const normalizedModel = normalizeToCcAlias(configuredModel);
+          if (normalizedModel) {
+            updatedToolInput = { ...toolInput, model: normalizedModel };
+          }
+        }
       }
     }
 
@@ -1217,7 +1392,32 @@ async function main() {
       }
     }
 
-    const todoStatus = getTodoStatus(directory);
+    const todoStatus = await getTodoStatus(directory);
+
+    // Force-agent-delegation: symmetric to evaluateAgentHeavyPreflight. Where
+    // preflight blocks Task/Agent spawning when context is exhausted, this
+    // evaluator blocks raw Read/Edit/Write/Grep/Glob when configured rules
+    // indicate the work should be delegated to a specialised agent. Default OFF
+    // — only fires when `.omc/config.json` has `routing.forceDelegation.enforce`.
+    const delegationBlock = evaluateForceAgentDelegation({
+      toolName,
+      stateDir,
+      loadOmcConfig,
+    });
+    if (delegationBlock) {
+      // Force-delegation preflight returns `{ decision: 'block', reason }` to
+      // match the agent-heavy preflight contract. Translate to the
+      // Claude Code hookSpecificOutput shape (`permissionDecision: 'deny'`).
+      console.log(JSON.stringify({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: delegationBlock.reason,
+        },
+      }));
+      return;
+    }
 
     if (toolName === 'Task' || toolName === 'Agent') {
       const rawTranscriptPath = data.transcript_path || data.transcriptPath || '';
@@ -1241,14 +1441,34 @@ async function main() {
 
     if (toolName === 'Task' || toolName === 'Agent') {
       const toolInput = data.toolInput || data.tool_input || null;
-      message = generateAgentSpawnMessage(toolInput, stateDir, todoStatus, sessionId);
+      // Reflect any injected per-agent model (issue #3242) in the advisory label.
+      message = generateAgentSpawnMessage(updatedToolInput || toolInput, stateDir, todoStatus, sessionId);
     } else {
       message = generateMessage(toolName, todoStatus, modeActive);
     }
     message = combineHookMessages(slopWarning, message);
 
+    // Carry any per-agent model injection (issue #3242) even when the advisory
+    // message is empty or throttled, so the configured model is always applied.
+    const modelInjection = updatedToolInput
+      ? { hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: updatedToolInput } }
+      : null;
+
     if (!message) {
-      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      console.log(JSON.stringify(
+        modelInjection
+          ? { continue: true, suppressOutput: true, ...modelInjection }
+          : { continue: true, suppressOutput: true }
+      ));
+      return;
+    }
+
+    if (!shouldEmitAdvisoryMessage(stateDir, sessionId, message)) {
+      console.log(JSON.stringify(
+        modelInjection
+          ? { continue: true, suppressOutput: true, ...modelInjection }
+          : { continue: true, suppressOutput: true }
+      ));
       return;
     }
 
@@ -1256,7 +1476,8 @@ async function main() {
       continue: true,
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext: message
+        additionalContext: message,
+        ...(updatedToolInput ? { updatedInput: updatedToolInput } : {})
       }
     }, null, 2));
   } catch (error) {

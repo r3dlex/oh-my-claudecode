@@ -103,7 +103,7 @@ export interface McpWorkerMember {
 export interface HeartbeatData {
   workerName: string;
   teamName: string;
-  provider: 'codex' | 'gemini' | 'claude';
+  provider: 'codex' | 'gemini' | 'claude' | 'cursor' | 'grok';
   pid: number;
   lastPollAt: string;       // ISO timestamp of last poll cycle
   currentTaskId?: string;   // task being executed, if any
@@ -138,7 +138,7 @@ export interface TaskFailureSidecar {
 }
 
 /** Worker backend type */
-export type WorkerBackend = 'claude-native' | 'mcp-codex' | 'mcp-gemini' | 'tmux-claude' | 'tmux-codex' | 'tmux-gemini' | 'tmux-cursor';
+export type WorkerBackend = 'claude-native' | 'mcp-codex' | 'mcp-gemini' | 'tmux-claude' | 'tmux-codex' | 'tmux-gemini' | 'tmux-cursor' | 'tmux-grok';
 
 /** Worker capability tag */
 export type WorkerCapability =
@@ -278,7 +278,7 @@ export interface WorkerInfo {
   name: string;
   index: number;
   role: string;
-  worker_cli?: 'codex' | 'claude' | 'gemini' | 'cursor';
+  worker_cli?: 'codex' | 'claude' | 'gemini' | 'cursor' | 'grok';
   assigned_tasks: string[];
   pid?: number;
   pane_id?: string;
@@ -291,7 +291,7 @@ export interface WorkerInfo {
   team_state_root?: string;
   /**
    * Verdict-output file path for CLI-worker output contract (AC-7).
-   * Set when the worker was spawned for a reviewer role on codex/gemini.
+   * Set when the worker was spawned for a reviewer role on codex/gemini/grok.
    * Consumed by the worker-completion handler in runtime-v2.
    */
   output_file?: string;
