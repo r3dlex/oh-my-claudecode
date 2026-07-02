@@ -28,17 +28,17 @@ import { appendTeamEvent, emitMonitorDerivedEvents } from './events.js';
 import { DEFAULT_TEAM_GOVERNANCE, DEFAULT_TEAM_TRANSPORT_POLICY, getConfigGovernance, } from './governance.js';
 import { inferPhase } from './phase-controller.js';
 import { validateTeamName } from './team-name.js';
-import { buildWorkerArgv, getContract, resolveValidatedBinaryPath, getWorkerEnv as getModelWorkerEnv, isPromptModeAgent, getPromptModeArgs, resolveClaudeWorkerModel, } from './model-contract.js';
+import { buildWorkerArgv, getContract, resolveValidatedBinaryPath, getWorkerEnv as getModelWorkerEnv, isPromptModeAgent, getPromptModeArgs, resolveClaudeWorkerModel, assertHeadlessSupported, isHeadlessSupportedOnPlatform, } from './model-contract.js';
 import { createTeamSession, spawnWorkerInPane, sendToWorker, killTeamSession, waitForPaneReady, paneHasActiveTask, paneLooksReady, applyMainVerticalLayout, getWorkerLiveness, captureTeamPane, sendTeamPaneKey, splitTeamWorkerPane, } from './tmux-session.js';
 import { composeInitialInbox, ensureWorkerStateDir, writeWorkerOverlay, generateTriggerMessage, generatePromptModeStartupPrompt, } from './worker-bootstrap.js';
 import { queueInboxInstruction } from './mcp-comm.js';
 import { cleanupTeamWorktrees, inspectTeamWorktreeCleanupSafety, ensureWorkerWorktree, installWorktreeRootAgents, normalizeTeamWorktreeMode, } from './git-worktree.js';
 import { formatOmcCliInvocation } from '../utils/omc-cli-rendering.js';
 import { createSwallowedErrorLogger } from '../lib/swallowed-error.js';
-import { CANONICAL_TEAM_ROLES } from '../shared/types.js';
+import { CANONICAL_TEAM_ROLES, CURSOR_EXECUTOR_TEAM_ROLES } from '../shared/types.js';
 import { loadConfig } from '../config/loader.js';
 import { buildResolvedRoutingSnapshot, getRoleRoutingSpec } from './stage-router.js';
-import { routeTaskToRole } from './role-router.js';
+import { inferLaneIntent, routeTaskToRole } from './role-router.js';
 import { normalizeDelegationRole } from '../features/delegation-routing/types.js';
 import { cliWorkerOutputFilePath, parseCliWorkerVerdict, renderCliWorkerOutputContract, shouldInjectContract, } from './cli-worker-contract.js';
 import { startMergeOrchestrator, recoverFromRestart, } from './merge-orchestrator.js';
@@ -51,6 +51,23 @@ import { installCommitCadence, startFallbackPoller, uninstallCommitCadence, } fr
 // runtime-cli process). Lives at module scope so shutdownTeamV2 can find it.
 // ---------------------------------------------------------------------------
 const orchestratorByTeam = new Map();
+const CURSOR_UNSUPPORTED_REVIEW_INTENT_RE = /\b(?:review|audit|critic|critique|security|vulnerabilit|cve|owasp|xss|csrf|sqli|verdict|approval|approve|final\s+decision)\b/i;
+const CURSOR_EXECUTOR_CONTEXT_RE = /\b(?:implement|implementation|apply|edit|patch|fix|build|ci|lint|compile|tsc|type.?check|test|tests|debug|troubleshoot|investigate|root.?cause|diagnos|refactor|clean\s*up|simplif)\b/i;
+const CURSOR_EXECUTOR_CONTEXT_INTENTS = new Set([
+    'implementation',
+    'build-fix',
+    'debug',
+    'cleanup',
+    'verification',
+]);
+function isCursorExecutorContextTask(task) {
+    const text = `${task.subject} ${task.description}`.trim();
+    if (!text || CURSOR_UNSUPPORTED_REVIEW_INTENT_RE.test(text))
+        return false;
+    if (!CURSOR_EXECUTOR_CONTEXT_RE.test(text))
+        return false;
+    return CURSOR_EXECUTOR_CONTEXT_INTENTS.has(inferLaneIntent(text));
+}
 const cadenceByTeam = new Map();
 function registerTeamOrchestrator(teamName, handle) {
     orchestratorByTeam.set(teamName, handle);
@@ -121,7 +138,7 @@ const MONITOR_SIGNAL_STALE_MS = 30_000;
  * Returns the primary assignment by default; callers swap to the Claude
  * fallback if the primary provider's CLI binary is missing at spawn time.
  */
-function resolveTaskAssignment(task, resolvedRouting, roleRoutingConfig, resolvedBinaryPaths, fallbackAgent) {
+export function resolveTaskAssignment(task, resolvedRouting, roleRoutingConfig, resolvedBinaryPaths, fallbackAgent) {
     const canonicalRoles = new Set(CANONICAL_TEAM_ROLES);
     const hasExplicitRole = typeof task.role === 'string' && task.role.length > 0;
     const rawRole = hasExplicitRole
@@ -138,7 +155,28 @@ function resolveTaskAssignment(task, resolvedRouting, roleRoutingConfig, resolve
     // pre-patch contract: `/team N:codex ...` stays on codex when config has no
     // per-role routing, even if the task text incidentally mentions "reviewer".
     const hasConfigForRole = !!getRoleRoutingSpec(roleRoutingConfig, canonical);
+    if (fallbackAgent === 'cursor') {
+        if (CURSOR_EXECUTOR_TEAM_ROLES.includes(canonical)) {
+            return { agentType: fallbackAgent, model: '', role: canonical };
+        }
+        if (!hasExplicitRole && !hasConfigForRole && isCursorExecutorContextTask(task)) {
+            return { agentType: fallbackAgent, model: '', role: 'executor' };
+        }
+    }
     if (!hasExplicitRole && !hasConfigForRole) {
+        if (fallbackAgent === 'cursor' && !CURSOR_EXECUTOR_TEAM_ROLES.includes(canonical)) {
+            throw new Error(`Cursor workers are executor-style only; inferred role "${canonical}" for task "${task.subject}" must run on a native Claude/OMC reviewer agent or another supported CLI worker.`);
+        }
+        return { agentType: fallbackAgent, model: '', role: canonical };
+    }
+    // Explicit provider + explicit role with NO per-role routing config: the user
+    // named the provider directly on the worker spec (e.g. `1:antigravity:executor`
+    // or `1:gemini:reviewer`), so honor that provider and treat the role as the
+    // prompt role, not a routing key. Without this, an explicit role would always
+    // opt into resolved_routing, whose default executor primary is Claude — silently
+    // launching Claude instead of the requested CLI provider. When `team.roleRouting`
+    // *is* configured for the role, that deliberate config still wins (below).
+    if (hasExplicitRole && !hasConfigForRole && fallbackAgent !== 'claude') {
         return { agentType: fallbackAgent, model: '', role: canonical };
     }
     const pair = resolvedRouting[canonical];
@@ -165,6 +203,11 @@ function shouldUseLaunchTimeCliResolution(reason) {
     return /untrusted location|relative path/i.test(reason);
 }
 function resolvePreflightBinaryPath(agentType) {
+    // Treat a platform-unsupported headless provider (e.g. antigravity on Windows)
+    // as unavailable during preflight, so role routing falls back cleanly to Claude
+    // instead of recording the binary and failing mid-spawn. Throws here are caught
+    // by startTeamV2's preflight loop and recorded as missingBinaryReasons.
+    assertHeadlessSupported(agentType);
     try {
         return { path: resolveValidatedBinaryPath(agentType), degraded: false };
     }
@@ -367,6 +410,11 @@ async function spawnV2Worker(opts) {
                 || process.env.OMC_GEMINI_DEFAULT_MODEL
                 || undefined;
         }
+        if (opts.agentType === 'antigravity') {
+            return process.env.OMC_EXTERNAL_MODELS_DEFAULT_ANTIGRAVITY_MODEL
+                || process.env.OMC_ANTIGRAVITY_DEFAULT_MODEL
+                || undefined;
+        }
         if (opts.agentType === 'grok') {
             return process.env.OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL
                 || process.env.OMC_GROK_DEFAULT_MODEL
@@ -385,7 +433,7 @@ async function spawnV2Worker(opts) {
         resolvedBinaryPath,
         model: modelForAgent,
     });
-    // For prompt-mode agents (currently gemini), keep the full instruction in
+    // For prompt-mode agents (gemini, antigravity), keep the full instruction in
     // inbox.md and pass only a short file-pointer prompt via CLI args. This
     // avoids echoing reviewer/seed prompt text into tmux scrollback.
     if (usePromptMode) {
@@ -585,7 +633,20 @@ export async function startTeamV2(config) {
     // Validate CLIs and pin absolute binary paths for user-declared agentTypes.
     // AC-8: missing/untrusted binaries fall back to the snapshot's Claude tuple at
     // spawn time; emit a loud warning naming the binary so operators can fix it.
-    const agentTypes = config.agentTypes;
+    // Rewrite headless-unsupported direct workers (e.g. antigravity on Windows) to
+    // the Claude fallback up front, BEFORE any team state or tmux session is created.
+    // Direct launches like `omc team 1:antigravity` flow through `agentTypes` as the
+    // round-robin fallbackAgent for resolveTaskAssignment, so without this they would
+    // pass the unsupported provider through and only fail mid-spawn. (Role-routed
+    // primaries are handled separately by resolvePreflightBinaryPath's guard.)
+    const declaredAgentTypes = config.agentTypes;
+    const agentTypes = declaredAgentTypes.map((t) => {
+        if (!isHeadlessSupportedOnPlatform(t)) {
+            process.stderr.write(`[team/runtime-v2] ${t} headless mode is unsupported on this platform — using claude fallback for direct workers\n`);
+            return 'claude';
+        }
+        return t;
+    });
     const resolvedBinaryPaths = {};
     const missingBinaryReasons = [];
     for (const agentType of [...new Set(agentTypes)]) {

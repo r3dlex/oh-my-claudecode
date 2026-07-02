@@ -10,7 +10,7 @@
  * Config edits mid-team-life do NOT change routing; user must create a new
  * team to pick up new routing. Enforced by runtime-v2 / scaling consumers.
  */
-import { CANONICAL_TEAM_ROLES } from '../shared/types.js';
+import { CANONICAL_TEAM_ROLES, CURSOR_EXECUTOR_TEAM_ROLES } from '../shared/types.js';
 import { normalizeDelegationRole } from '../features/delegation-routing/types.js';
 import { BUILTIN_EXTERNAL_MODEL_DEFAULTS, getDefaultTierModels, } from '../config/models.js';
 /** Map canonical team role → KnownAgentName key (matches PluginConfig.agents.*). */
@@ -50,6 +50,7 @@ const ROLE_DEFAULT_TIER = {
     'document-specialist': 'MEDIUM',
 };
 const TIER_SET = new Set(['HIGH', 'MEDIUM', 'LOW']);
+const CURSOR_EXECUTOR_TEAM_ROLE_SET = new Set(CURSOR_EXECUTOR_TEAM_ROLES);
 function isTier(value) {
     return TIER_SET.has(value);
 }
@@ -99,7 +100,7 @@ function resolveClaudeModel(role, raw, cfg) {
 /**
  * Resolve a user-supplied `model` value for an external provider worker.
  *
- * Tier names are Claude-centric and not meaningful for codex/gemini/grok/cursor,
+ * Tier names are Claude-centric and not meaningful for codex/gemini/grok/cursor/antigravity,
  * so tier input (or absent input) maps to the provider's builtin default. Only
  * an explicit non-tier model ID is passed through.
  */
@@ -116,6 +117,9 @@ function resolveExternalModel(provider, raw, cfg) {
     }
     if (provider === 'cursor') {
         return '';
+    }
+    if (provider === 'antigravity') {
+        return defaults?.antigravityModel ?? BUILTIN_EXTERNAL_MODEL_DEFAULTS.antigravityModel;
     }
     return defaults?.geminiModel ?? BUILTIN_EXTERNAL_MODEL_DEFAULTS.geminiModel;
 }
@@ -140,6 +144,9 @@ export function resolveRoleAssignment(role, cfg) {
     const provider = isOrchestrator
         ? 'claude'
         : (spec?.provider ?? 'claude');
+    if (provider === 'cursor' && !CURSOR_EXECUTOR_TEAM_ROLE_SET.has(canonical)) {
+        throw new Error(`team.roleRouting.${canonical}.provider: cursor is only supported for executor-style roles (${[...CURSOR_EXECUTOR_TEAM_ROLE_SET].join(', ')})`);
+    }
     const model = provider === 'claude'
         ? resolveClaudeModel(canonical, spec?.model, cfg)
         : resolveExternalModel(provider, spec?.model, cfg);

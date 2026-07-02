@@ -12,7 +12,7 @@
 import { resolve } from 'path';
 import { mkdir, readFile } from 'fs/promises';
 import { tmuxExec, tmuxSpawn } from '../cli/tmux-utils.js';
-import { buildWorkerArgv, getWorkerEnv as getModelWorkerEnv, resolveClaudeWorkerModel, } from './model-contract.js';
+import { buildWorkerArgv, getWorkerEnv as getModelWorkerEnv, resolveClaudeWorkerModel, assertHeadlessSupported, } from './model-contract.js';
 import { CANONICAL_TEAM_ROLES } from '../shared/types.js';
 import { normalizeDelegationRole } from '../features/delegation-routing/types.js';
 import { routeTaskToRole } from './role-router.js';
@@ -24,7 +24,7 @@ import { writeWorkerOverlay } from './worker-bootstrap.js';
 import { ensureWorkerWorktree, installWorktreeRootAgents, prepareWorkerWorktreeForRemoval, removeWorkerWorktree, restoreWorktreeRootAgents, } from './git-worktree.js';
 // ── Environment gate ──────────────────────────────────────────────────────────
 const OMC_TEAM_SCALING_ENABLED_ENV = 'OMC_TEAM_SCALING_ENABLED';
-const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor']);
+const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok', 'cursor', 'antigravity']);
 export function isScalingEnabled(env = process.env) {
     const raw = env[OMC_TEAM_SCALING_ENABLED_ENV];
     if (!raw)
@@ -248,6 +248,10 @@ export async function scaleUp(teamName, count, agentType, tasks, cwd, env = proc
             // fallback tuple. Aborting the scale_up silently would mask a missing
             // CLI, so we only rollback if even the fallback cannot be built.
             const tryBuildLaunch = (agentType, model) => {
+                // Platform guard (parity with startTeamV2 preflight): a headless-unsupported
+                // provider (e.g. antigravity on Windows) throws here so scale-up falls back
+                // to the routed Claude fallback instead of spawning an unusable primary.
+                assertHeadlessSupported(agentType);
                 const [launchBinary, ...launchArgs] = buildWorkerArgv(agentType, {
                     teamName: sanitized,
                     workerName,

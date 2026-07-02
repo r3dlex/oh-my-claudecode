@@ -18085,6 +18085,12 @@ function tmuxEnv() {
 function resolveEnv(opts) {
   return opts?.stripTmux ? tmuxEnv() : process.env;
 }
+function isUnixLikeOnWindows() {
+  return process.platform === "win32" && !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
+}
+function isNativeWindowsShell() {
+  return process.platform === "win32" && !isUnixLikeOnWindows();
+}
 function quoteForCmd(arg) {
   if (arg.length === 0) return '""';
   if (!/[\s"%^&|<>()]/.test(arg)) return arg;
@@ -18125,7 +18131,7 @@ async function tmuxShellAsync(command, opts) {
   });
 }
 async function tmuxCmdAsync(args, opts) {
-  if (args.some((a) => a.includes("#{"))) {
+  if (args.some((a) => a.includes("#{")) && !isNativeWindowsShell()) {
     const escaped = args.map((a) => "'" + a.replace(/'/g, "'\\''") + "'").join(" ");
     return tmuxShellAsync(escaped, opts);
   }
@@ -19721,7 +19727,7 @@ function makeJobResponse(jobId, job, extra = {}) {
 }
 var startSchema = external_exports.object({
   teamName: external_exports.string().describe('Slug name for the team (e.g. "auth-review")'),
-  agentTypes: external_exports.array(external_exports.string()).describe('Agent type per worker: "claude", "codex", or "gemini"'),
+  agentTypes: external_exports.array(external_exports.string()).describe('Agent type per worker: "claude", "codex", "gemini", or "antigravity"'),
   tasks: external_exports.array(external_exports.object({
     subject: external_exports.string().describe("Brief task title"),
     description: external_exports.string().describe("Full task description")
@@ -19981,7 +19987,7 @@ var TOOLS = [
       type: "object",
       properties: {
         teamName: { type: "string", description: "Slug name for the team" },
-        agentTypes: { type: "array", items: { type: "string" }, description: '"claude", "codex", or "gemini" per worker' },
+        agentTypes: { type: "array", items: { type: "string" }, description: '"claude", "codex", "gemini", or "antigravity" per worker' },
         tasks: {
           type: "array",
           items: {
