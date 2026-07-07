@@ -24,7 +24,7 @@ function askUsageError(reason) {
     return new Error(`${reason}\n${ASK_USAGE}`);
 }
 function warnDeprecatedAlias(alias, canonical) {
-    process.stderr.write(`[ask] DEPRECATED: ${alias} is deprecated; use ${canonical} instead.\n`);
+    process.stderr.write(`[ask] DEPRECATED: ${alias} deprecated; use ${canonical} instead.\n`);
 }
 function getPackageRoot() {
     if (typeof __dirname !== 'undefined' && __dirname) {
@@ -47,10 +47,6 @@ function getPackageRoot() {
     }
 }
 function resolveAskPromptsDir(cwd, packageRoot, env = process.env) {
-    const codexHomeOverride = env.CODEX_HOME?.trim();
-    if (codexHomeOverride) {
-        return join(codexHomeOverride, 'prompts');
-    }
     try {
         const scopePath = join(cwd, '.omx', 'setup-scope.json');
         if (existsSync(scopePath)) {
@@ -61,7 +57,11 @@ function resolveAskPromptsDir(cwd, packageRoot, env = process.env) {
         }
     }
     catch {
-        // Ignore malformed persisted scope and fall back to package agents.
+        // Ignore malformed persisted scope; fall back to user/package prompts.
+    }
+    const codexHomeOverride = env.CODEX_HOME?.trim();
+    if (codexHomeOverride) {
+        return join(codexHomeOverride, 'prompts');
     }
     return join(packageRoot, 'agents');
 }
@@ -80,14 +80,12 @@ async function resolveAgentPromptContent(role, promptsDir) {
             .filter((file) => file.endsWith('.md'))
             .map((file) => file.slice(0, -3))
             .sort();
-        const availableSuffix = availableRoles.length > 0
-            ? ` Available roles: ${availableRoles.join(', ')}.`
-            : '';
+        const availableSuffix = availableRoles.length > 0 ? ` Available roles: ${availableRoles.join(', ')}.` : '';
         throw new Error(`[ask] --agent-prompt role "${normalizedRole}" not found in ${promptsDir}.${availableSuffix}`);
     }
     const content = (await readFile(promptPath, 'utf-8')).trim();
     if (!content) {
-        throw new Error(`[ask] --agent-prompt role "${normalizedRole}" is empty: ${promptPath}`);
+        throw new Error(`[ask] --agent-prompt role "${normalizedRole}" empty: ${promptPath}`);
     }
     return content;
 }
@@ -155,8 +153,9 @@ export function resolveAskAdvisorScriptPath(packageRoot = getPackageRoot(), env 
     return join(packageRoot, 'scripts', 'run-provider-advisor.js');
 }
 function resolveSignalExitCode(signal) {
-    if (!signal)
+    if (!signal) {
         return 1;
+    }
     const signalNumber = osConstants.signals[signal];
     if (typeof signalNumber === 'number' && Number.isFinite(signalNumber)) {
         return 128 + signalNumber;
@@ -166,8 +165,8 @@ function resolveSignalExitCode(signal) {
 export async function askCommand(args) {
     const parsed = parseAskArgs(args);
     if (parsed.provider !== 'claude' && isExternalLLMDisabled()) {
-        throw new Error(`[ask] External LLM provider "${parsed.provider}" is blocked by security policy ` +
-            `(disableExternalLLM). Only "claude" is allowed in the current security configuration.`);
+        throw new Error(`[ask] External LLM provider "${parsed.provider}" blocked by security policy ` +
+            `(disableExternalLLM). Only "claude" allowed in current security configuration.`);
     }
     const packageRoot = getPackageRoot();
     const advisorScriptPath = resolveAskAdvisorScriptPath(packageRoot);
@@ -197,9 +196,7 @@ export async function askCommand(args) {
     if (child.error) {
         throw new Error(`[ask] failed to launch advisor script: ${child.error.message}`);
     }
-    const status = typeof child.status === 'number'
-        ? child.status
-        : resolveSignalExitCode(child.signal);
+    const status = typeof child.status === 'number' ? child.status : resolveSignalExitCode(child.signal);
     if (status !== 0) {
         process.exitCode = status;
     }

@@ -40,7 +40,7 @@ describe('Tier-0 contract docs consistency', () => {
     it('keeps deprecated compatibility aliases documented for project session manager', () => {
         // swarm alias removed in #1131
         expect(referenceDoc).toContain('project-session-manager');
-        expect(referenceDoc).toContain('`psm` | **Deprecated** compatibility alias for `project-session-manager`');
+        expect(referenceDoc).toMatch(/\|\s*`psm`\s*\|\s*\*\*Deprecated\*\* compatibility alias for `project-session-manager`\s*\|/);
     });
     it('does not document removed wrapper slash commands as installed skills', () => {
         expect(referenceDoc).not.toContain('/oh-my-claudecode:analyze <target>');

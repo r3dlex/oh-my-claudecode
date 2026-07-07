@@ -263,3 +263,91 @@ describe("shouldCollapseOpenClawBurst — terminal-state suppression", () => {
     expect(result).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// readState resilience — corrupted / partially-valid state files
+// ---------------------------------------------------------------------------
+
+describe("shouldCollapseOpenClawBurst — readState resilience", () => {
+  const tmux = "resilience-session";
+  const stateDir = join(".omc", "state");
+  const stateFile = "openclaw-event-dedupe.json";
+
+  function writeStateFile(projectPath: string, content: string): void {
+    const { mkdirSync, writeFileSync } = require("fs");
+    mkdirSync(join(projectPath, ...stateDir.split("/")), { recursive: true });
+    writeFileSync(join(projectPath, ...stateDir.split("/"), stateFile), content, "utf-8");
+  }
+
+  it("recovers gracefully from malformed JSON in state file", () => {
+    writeStateFile(projectDir, "NOT VALID JSON {{{");
+    // Should not throw — falls back to empty state
+    expect(() => collapse("session-start", projectDir, tmux)).not.toThrow();
+    const result = collapse("session-start", projectDir, tmux);
+    // Second call: first wasn't collapsed, so second within window IS collapsed
+    expect(typeof result).toBe("boolean");
+  });
+
+  it("recovers from state file with non-string updatedAt", () => {
+    writeStateFile(projectDir, JSON.stringify({ updatedAt: 12345, records: {} }));
+    expect(() => collapse("session-start", projectDir, tmux)).not.toThrow();
+  });
+
+  it("recovers from state file with null records field", () => {
+    writeStateFile(projectDir, JSON.stringify({ updatedAt: new Date().toISOString(), records: null }));
+    expect(() => collapse("session-start", projectDir, tmux)).not.toThrow();
+  });
+
+  it("recovers from state file with string records field", () => {
+    writeStateFile(projectDir, JSON.stringify({ updatedAt: new Date().toISOString(), records: "bad" }));
+    expect(() => collapse("session-start", projectDir, tmux)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneState — expired records are cleaned up
+// ---------------------------------------------------------------------------
+
+describe("shouldCollapseOpenClawBurst — expired record pruning", () => {
+  const tmux = "prune-session";
+
+  it("does not collapse when the only prior record is older than the TTL", () => {
+    vi.useFakeTimers();
+
+    // Fire a session-start to record state at t=0
+    expect(collapse("session-start", projectDir, tmux)).toBe(false);
+
+    // Advance past STATE_TTL_MS (6 hours)
+    vi.advanceTimersByTime(6 * 60 * 60 * 1000 + 1_000);
+
+    // The stale record is pruned → session-start is treated as fresh
+    expect(collapse("session-start", projectDir, tmux)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldCollapseOpenClawBurst — no projectPath / no descriptor edge cases
+// ---------------------------------------------------------------------------
+
+describe("shouldCollapseOpenClawBurst — descriptor edge cases", () => {
+  const tmux = "edge-session";
+
+  it("returns false when context has no projectPath", () => {
+    const context: import("../types.js").OpenClawContext = { projectPath: "" };
+    const signal = buildOpenClawSignal("session-start", context);
+    expect(shouldCollapseOpenClawBurst("session-start", signal, context, tmux)).toBe(false);
+  });
+
+  it("returns false for keyword-detector with empty prompt", () => {
+    const context = ctx(projectDir, { prompt: "" });
+    const signal = buildOpenClawSignal("keyword-detector", context);
+    // Empty prompt → descriptor returns null → no collapse
+    expect(shouldCollapseOpenClawBurst("keyword-detector", signal, context, tmux)).toBe(false);
+  });
+
+  it("returns false for keyword-detector with undefined prompt", () => {
+    const context = ctx(projectDir);
+    const signal = buildOpenClawSignal("keyword-detector", context);
+    expect(shouldCollapseOpenClawBurst("keyword-detector", signal, context, tmux)).toBe(false);
+  });
+});

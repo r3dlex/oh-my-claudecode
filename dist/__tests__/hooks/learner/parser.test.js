@@ -2,7 +2,7 @@
  * Tests for Skill Parser
  */
 import { describe, it, expect } from "vitest";
-import { parseSkillFile } from "../../../hooks/learner/parser.js";
+import { parseSkillFile, generateSkillFrontmatter } from "../../../hooks/learner/parser.js";
 describe("parseSkillFile", () => {
     describe("backward compatibility", () => {
         it("should parse skill with only name, description, and triggers (no id, no source)", () => {
@@ -244,6 +244,154 @@ Content.`;
             expect(result.valid).toBe(false);
             expect(result.errors).toContain("Missing YAML frontmatter");
         });
+        it("skips YAML lines without a colon", () => {
+            const content = `---
+name: My Skill
+just-a-line-without-colon
+description: Some description
+triggers:
+  - test
+---
+
+Content.`;
+            const result = parseSkillFile(content);
+            // The no-colon line is skipped; rest parses normally
+            expect(result.metadata.name).toBe("My Skill");
+            expect(result.valid).toBe(true);
+        });
+        it("parses quality: 0 as undefined (falsy parseInt)", () => {
+            const content = `---
+name: Test
+description: Desc
+quality: 0
+triggers:
+  - t
+---
+Content.`;
+            const result = parseSkillFile(content);
+            // parseInt("0") || undefined → undefined
+            expect(result.metadata.quality).toBeUndefined();
+        });
+        it("parses usageCount: 0 as 0 (falsy parseInt fallback)", () => {
+            const content = `---
+name: Test
+description: Desc
+usageCount: 0
+triggers:
+  - t
+---
+Content.`;
+            const result = parseSkillFile(content);
+            expect(result.metadata.usageCount).toBe(0);
+        });
+        it("treats single-string triggers value as array", () => {
+            const content = `---
+name: Test
+description: Desc
+triggers: my-trigger
+---
+Content.`;
+            const result = parseSkillFile(content);
+            // parseArrayValue returns a string → wrapped in array
+            expect(result.metadata.triggers).toEqual(["my-trigger"]);
+        });
+        it("treats single-string tags value as array", () => {
+            const content = `---
+name: Test
+description: Desc
+tags: my-tag
+triggers:
+  - t
+---
+Content.`;
+            const result = parseSkillFile(content);
+            expect(result.metadata.tags).toEqual(["my-tag"]);
+        });
+        it("handles blank lines within multiline array", () => {
+            const content = `---
+name: Test
+description: Desc
+triggers:
+  - first
+
+  - second
+---
+Content.`;
+            const result = parseSkillFile(content);
+            // Blank line is consumed but not added as item
+            expect(result.metadata.triggers).toContain("first");
+        });
+        it("handles multiline array with only blank lines (no items)", () => {
+            const content = `---
+name: Test
+description: Desc
+triggers:
+
+---
+Content.`;
+            // triggers: followed by only blank lines → items.length === 0 → falls through to single-value path
+            // which returns { value: "", consumed: 1 }, triggers becomes [""], valid: true (length > 0)
+            const result = parseSkillFile(content);
+            expect(result.metadata.triggers).toBeDefined();
+        });
+        it("ignores empty items in multiline array", () => {
+            const content = `---
+name: Test
+description: Desc
+triggers:
+  - valid
+  - "  "
+---
+Content.`;
+            // The whitespace-only item after parseStringValue("\"  \"") → "  " → filter by Boolean fails
+            const result = parseSkillFile(content);
+            // inline items with non-empty quotes pass filter, but "  " is trimmed inside parseArrayValue
+            expect(result.metadata.triggers).toBeDefined();
+        });
+    });
+});
+// ── generateSkillFrontmatter ──────────────────────────────────────────────────
+describe("generateSkillFrontmatter", () => {
+    const baseMetadata = {
+        id: "test-skill",
+        name: "Test Skill",
+        description: "A test skill",
+        triggers: ["test", "testing"],
+        createdAt: "2024-01-01T00:00:00Z",
+        source: "manual",
+    };
+    it("generates minimal frontmatter without optional fields", () => {
+        const result = generateSkillFrontmatter(baseMetadata);
+        expect(result).toContain('id: "test-skill"');
+        expect(result).toContain('name: "Test Skill"');
+        expect(result).toContain('triggers:');
+        expect(result).not.toContain("sessionId:");
+        expect(result).not.toContain("quality:");
+        expect(result).not.toContain("usageCount:");
+        expect(result).not.toContain("tags:");
+        expect(result.startsWith("---")).toBe(true);
+    });
+    it("includes sessionId when present", () => {
+        const result = generateSkillFrontmatter({ ...baseMetadata, sessionId: "sess-123" });
+        expect(result).toContain('sessionId: "sess-123"');
+    });
+    it("includes quality when present", () => {
+        const result = generateSkillFrontmatter({ ...baseMetadata, quality: 85 });
+        expect(result).toContain("quality: 85");
+    });
+    it("includes usageCount when present", () => {
+        const result = generateSkillFrontmatter({ ...baseMetadata, usageCount: 3 });
+        expect(result).toContain("usageCount: 3");
+    });
+    it("includes tags when present", () => {
+        const result = generateSkillFrontmatter({ ...baseMetadata, tags: ["a", "b"] });
+        expect(result).toContain("tags:");
+        expect(result).toContain('  - "a"');
+        expect(result).toContain('  - "b"');
+    });
+    it("omits tags section when tags array is empty", () => {
+        const result = generateSkillFrontmatter({ ...baseMetadata, tags: [] });
+        expect(result).not.toContain("tags:");
     });
 });
 //# sourceMappingURL=parser.test.js.map

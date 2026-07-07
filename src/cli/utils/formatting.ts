@@ -14,3 +14,52 @@ export function formatTokenCount(tokens: number): string {
   if (tokens < 1000000) return `${(tokens / 1000).toFixed(1)}k`;
   return `${(tokens / 1000000).toFixed(2)}M`;
 }
+export type TableColumn<T extends Record<string, unknown> = Record<string, unknown>> = {
+  header: string;
+  field: keyof T & string;
+  width: number;
+  align?: 'left' | 'right' | 'center';
+  format?: (value: any, row: T) => string;
+};
+
+function padCell(value: string, width: number, align: 'left' | 'right' | 'center' = 'left'): string {
+  const visible = value.length;
+  if (visible >= width) return value;
+  const padding = width - visible;
+  if (align === 'right') return `${' '.repeat(padding)}${value}`;
+  if (align === 'center') {
+    const left = Math.floor(padding / 2);
+    const right = padding - left;
+    return `${' '.repeat(left)}${value}${' '.repeat(right)}`;
+  }
+  return `${value}${' '.repeat(padding)}`;
+}
+
+export function renderTable<T extends Record<string, unknown>>(rows: T[], columns: TableColumn<T>[]): string {
+  const header = columns.map((column) => padCell(column.header, column.width, column.align)).join('  ');
+  const separator = columns.map((column) => '-'.repeat(Math.max(3, column.width))).join('  ');
+  const body = rows.map((row) => columns.map((column) => {
+    const raw = row[column.field];
+    const text = column.format ? column.format(raw, row) : raw == null ? '' : String(raw);
+    return padCell(text, column.width, column.align);
+  }).join('  '));
+  return [header, separator, ...body].join('\n');
+}
+
+export function formatCostWithColor(cost: number): string {
+  const formatted = `$${cost.toFixed(4)}`;
+  if (cost < 1) return colors.green(formatted);
+  if (cost < 5) return colors.yellow(formatted);
+  return colors.red(formatted);
+}
+
+export function formatDuration(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
+}

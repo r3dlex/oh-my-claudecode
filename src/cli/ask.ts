@@ -18,7 +18,6 @@ export const ASK_USAGE = [
 const ASK_PROVIDERS = ['claude', 'codex', 'gemini', 'antigravity', 'grok', 'cursor'] as const;
 export type AskProvider = (typeof ASK_PROVIDERS)[number];
 const ASK_PROVIDER_SET = new Set<string>(ASK_PROVIDERS);
-
 const ASK_AGENT_PROMPT_FLAG = '--agent-prompt';
 const SAFE_ROLE_PATTERN = /^[a-z][a-z0-9-]*$/;
 const ASK_ADVISOR_SCRIPT_ENV = 'OMC_ASK_ADVISOR_SCRIPT';
@@ -36,7 +35,7 @@ function askUsageError(reason: string): Error {
 }
 
 function warnDeprecatedAlias(alias: string, canonical: string): void {
-  process.stderr.write(`[ask] DEPRECATED: ${alias} is deprecated; use ${canonical} instead.\n`);
+  process.stderr.write(`[ask] DEPRECATED: ${alias} deprecated; use ${canonical} instead.\n`);
 }
 
 function getPackageRoot(): string {
@@ -67,11 +66,6 @@ function resolveAskPromptsDir(
   packageRoot: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const codexHomeOverride = env.CODEX_HOME?.trim();
-  if (codexHomeOverride) {
-    return join(codexHomeOverride, 'prompts');
-  }
-
   try {
     const scopePath = join(cwd, '.omx', 'setup-scope.json');
     if (existsSync(scopePath)) {
@@ -81,7 +75,12 @@ function resolveAskPromptsDir(
       }
     }
   } catch {
-    // Ignore malformed persisted scope and fall back to package agents.
+    // Ignore malformed persisted scope; fall back to user/package prompts.
+  }
+
+  const codexHomeOverride = env.CODEX_HOME?.trim();
+  if (codexHomeOverride) {
+    return join(codexHomeOverride, 'prompts');
   }
 
   return join(packageRoot, 'agents');
@@ -99,26 +98,23 @@ async function resolveAgentPromptContent(role: string, promptsDir: string): Prom
 
   const promptPath = join(promptsDir, `${normalizedRole}.md`);
   if (!existsSync(promptPath)) {
-    const files = await readdir(promptsDir).catch(() => [] as string[]);
+    const files = await readdir(promptsDir).catch(() => []);
     const availableRoles = files
       .filter((file) => file.endsWith('.md'))
       .map((file) => file.slice(0, -3))
       .sort();
-    const availableSuffix = availableRoles.length > 0
-      ? ` Available roles: ${availableRoles.join(', ')}.`
-      : '';
+    const availableSuffix = availableRoles.length > 0 ? ` Available roles: ${availableRoles.join(', ')}.` : '';
     throw new Error(`[ask] --agent-prompt role "${normalizedRole}" not found in ${promptsDir}.${availableSuffix}`);
   }
 
   const content = (await readFile(promptPath, 'utf-8')).trim();
   if (!content) {
-    throw new Error(`[ask] --agent-prompt role "${normalizedRole}" is empty: ${promptPath}`);
+    throw new Error(`[ask] --agent-prompt role "${normalizedRole}" empty: ${promptPath}`);
   }
-
   return content;
 }
 
-export function parseAskArgs(args: readonly string[]): ParsedAskArgs {
+export function parseAskArgs(args: string[]): ParsedAskArgs {
   const [providerRaw, ...rest] = args;
   const provider = (providerRaw || '').toLowerCase();
 
@@ -135,6 +131,7 @@ export function parseAskArgs(args: readonly string[]): ParsedAskArgs {
 
   for (let i = 0; i < rest.length; i += 1) {
     const token = rest[i];
+
     if (token === ASK_AGENT_PROMPT_FLAG) {
       const role = rest[i + 1]?.trim();
       if (!role || role.startsWith('-')) {
@@ -180,10 +177,7 @@ export function parseAskArgs(args: readonly string[]): ParsedAskArgs {
   };
 }
 
-export function resolveAskAdvisorScriptPath(
-  packageRoot = getPackageRoot(),
-  env: NodeJS.ProcessEnv = process.env,
-): string {
+export function resolveAskAdvisorScriptPath(packageRoot = getPackageRoot(), env: NodeJS.ProcessEnv = process.env): string {
   const canonical = env[ASK_ADVISOR_SCRIPT_ENV]?.trim();
   if (canonical) {
     return isAbsolute(canonical) ? canonical : join(packageRoot, canonical);
@@ -199,7 +193,9 @@ export function resolveAskAdvisorScriptPath(
 }
 
 function resolveSignalExitCode(signal: NodeJS.Signals | null): number {
-  if (!signal) return 1;
+  if (!signal) {
+    return 1;
+  }
 
   const signalNumber = osConstants.signals[signal];
   if (typeof signalNumber === 'number' && Number.isFinite(signalNumber)) {
@@ -214,8 +210,8 @@ export async function askCommand(args: string[]): Promise<void> {
 
   if (parsed.provider !== 'claude' && isExternalLLMDisabled()) {
     throw new Error(
-      `[ask] External LLM provider "${parsed.provider}" is blocked by security policy ` +
-      `(disableExternalLLM). Only "claude" is allowed in the current security configuration.`,
+      `[ask] External LLM provider "${parsed.provider}" blocked by security policy ` +
+        `(disableExternalLLM). Only "claude" allowed in current security configuration.`,
     );
   }
 
@@ -233,22 +229,19 @@ export async function askCommand(args: string[]): Promise<void> {
     finalPrompt = `${agentPromptContent}\n\n${parsed.prompt}`;
   }
 
-  const child = spawnSync(
-    process.execPath,
-    [advisorScriptPath, parsed.provider, finalPrompt],
-    {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        [ASK_ORIGINAL_TASK_ENV]: parsed.prompt,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const child = spawnSync(process.execPath, [advisorScriptPath, parsed.provider, finalPrompt], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      [ASK_ORIGINAL_TASK_ENV]: parsed.prompt,
     },
-  );
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
   if (child.stdout && child.stdout.length > 0) {
     process.stdout.write(child.stdout);
   }
+
   if (child.stderr && child.stderr.length > 0) {
     process.stderr.write(child.stderr);
   }
@@ -257,10 +250,7 @@ export async function askCommand(args: string[]): Promise<void> {
     throw new Error(`[ask] failed to launch advisor script: ${child.error.message}`);
   }
 
-  const status = typeof child.status === 'number'
-    ? child.status
-    : resolveSignalExitCode(child.signal);
-
+  const status = typeof child.status === 'number' ? child.status : resolveSignalExitCode(child.signal);
   if (status !== 0) {
     process.exitCode = status;
   }

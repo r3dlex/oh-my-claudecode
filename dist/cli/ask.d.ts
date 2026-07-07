@@ -6,7 +6,7 @@ export interface ParsedAskArgs {
     prompt: string;
     agentPromptRole?: string;
 }
-export declare function parseAskArgs(args: readonly string[]): ParsedAskArgs;
+export declare function parseAskArgs(args: string[]): ParsedAskArgs;
 export declare function resolveAskAdvisorScriptPath(packageRoot?: string, env?: NodeJS.ProcessEnv): string;
 export declare function askCommand(args: string[]): Promise<void>;
 export {};

@@ -10,11 +10,18 @@ const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..');
 const PLUGIN_JSON = join(REPO_ROOT, '.claude-plugin', 'plugin.json');
 const SKILLS_DIR = join(REPO_ROOT, 'skills');
+const AGENTS_DIR = join(REPO_ROOT, 'agents');
 const COMMANDS_DIR = join(REPO_ROOT, 'commands');
 const COMPACT_PLUGIN_SKILL_BUDGET_BYTES = 64 * 1024;
 const COMPACT_PLUGIN_SKILL_PER_FILE_BUDGET_BYTES = 2 * 1024;
 function readPluginJson() {
     return JSON.parse(readFileSync(PLUGIN_JSON, 'utf-8'));
+}
+function bundledAgentFiles() {
+    return readdirSync(AGENTS_DIR, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+        .map((entry) => entry.name)
+        .sort();
 }
 function bundledSkillDirs() {
     return readdirSync(SKILLS_DIR, { withFileTypes: true })
@@ -80,6 +87,11 @@ describe('plugin skill context budget gate (issues #2943, #2986)', () => {
         const winEscapedBody = win32.join(winRoot, '..', 'other-plugin', 'SKILL.md');
         expect(isPathInsideOrEqual(winRoot, winArchivedBody)).toBe(true);
         expect(isPathInsideOrEqual(winRoot, winEscapedBody)).toBe(false);
+    });
+    it('registers package agents through plugin.json as a plugin-provided directory', () => {
+        const { agents } = readPluginJson();
+        expect(agents).toBe('./agents/');
+        expect(bundledAgentFiles()).toHaveLength(19);
     });
     it('keeps bundled skills discoverable and manually callable', () => {
         expect(readPluginJson().commands).toBe('./commands/');

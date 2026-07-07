@@ -97,6 +97,13 @@ function unique(files) {
   return [...new Set(files.map(normalizeFile).filter(Boolean))];
 }
 
+function conciseErrorMessage(error, maxLength = 1000) {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.replace(/\s+/gu, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength)}... [truncated]`;
+}
+
 function getChangedFiles(cwd, { stagedOnly = false } = {}) {
   if (stagedOnly) {
     return unique(parseNameStatus(runGit(cwd, ['diff', '--cached', '--name-status'])));
@@ -192,7 +199,7 @@ export function assessRisk(options = {}) {
   } catch (error) {
     return {
       level: 'unknown',
-      reason: `Unable to assess git diff: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `Unable to assess git diff: ${conciseErrorMessage(error)}`,
       changedFiles: [],
       relevantFiles: [],
       diffSize: 0,
