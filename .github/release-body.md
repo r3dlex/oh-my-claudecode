@@ -1,17 +1,32 @@
-# oh-my-claudecode v4.15.3: keyword, hook, plugin-cache, and TypeScript LSP fixes
+# oh-my-claudecode v4.15.4: Bug Fixes
 
 ## Release Notes
 
-Patch release after v4.15.2 focused on reducing false workflow activation, repairing hook/plugin-cache edge cases, improving HUD payload estimates, and adding native TypeScript 7 LSP support.
+Release with **7 bug fixes**, **1 other change** across **8 merged PRs**.
 
 ### Highlights
 
-- Add native TypeScript 7 server support for LSP workflows (#3405).
-- Add disabled keyword config support and stop Ralph from false-firing on proper nouns / identifiers (#3435).
-- Fix plugin cache self-realpath exclusion and hook prune safety (#3432, #3430).
-- Fix persistent-mode Stop hook watchdog and prompt hook timeout preemption (#3434, #3428).
-- Fix project-memory command harvest, HUD payload estimates after compaction, MiniMax general-plan usage parsing, Thai informational keyword prompts, and multi-line CRLF rule-array parsing (#3426, #3424, #3420, #3410, #3415).
-- Deploy hook libs before entrypoints and mark unmatched subagent stop telemetry correctly (#3407, #3417).
+- **fix(team): recover confirmed-dead runtime-v2 workers** (#3462)
+- **fix(merge-readiness): close red-team proof and authority gaps** (#3467)
+- **fix(ultragoal): recover the active /goal from the transcript on Claude Code** (#3468)
+
+### Bug Fixes
+
+- **fix(team): recover confirmed-dead runtime-v2 workers** (#3462)
+- **fix(merge-readiness): close red-team proof and authority gaps** (#3467)
+- **fix(ultragoal): recover the active /goal from the transcript on Claude Code** (#3468)
+- **fix(ci): isolate subagent lock benchmark** (#3459)
+- **fix(resolve-node): add windowsHide to node binary resolution execSync** (#3455)
+- **fix(installer): remove legacy pre-marker OMC guides** (#3450)
+- **fix(windows): hide console window for git execSync calls** (#3445)
+
+### Other Changes
+
+- **Add deterministic capabilities lockfile preflight** (#3440)
+
+### Stats
+
+- **8 PRs merged** | **0 new features** | **7 bug fixes** | **0 security/hardening improvements** | **1 other change**
 
 ### Install / Update
 
@@ -20,7 +35,7 @@ The npm CLI and the Claude Code marketplace/plugin are separate install tracks, 
 **CLI / runtime:**
 
 ```bash
-npm install -g oh-my-claude-sisyphus@4.15.3
+npm install -g oh-my-claude-sisyphus@4.15.4
 ```
 
 **Claude Code plugin:**
@@ -29,10 +44,10 @@ npm install -g oh-my-claude-sisyphus@4.15.3
 /plugin marketplace update omc
 ```
 
-**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v4.15.2...v4.15.3
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v4.15.3...v4.15.4
 
 ## Contributors
 
 Thank you to all contributors who made this release possible!
 
-@Yeachan-Heo @qitiandashenggogogo
+@geneccx @LukeTheoJohnson @pangpang778 @pgagarinov @Yeachan-Heo
