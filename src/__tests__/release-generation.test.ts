@@ -155,6 +155,7 @@ describe('release generation', () => {
     );
     expect(workflow).toContain('npm install --global npm@11.17.0');
     expect(workflow).toContain('test "$(npm --version)" = "11.17.0"');
+    expect(workflow).not.toContain('\npermissions:\n');
 
     const setupNode = stepIndex('Setup Node.js');
     const npmPin = stepIndex('Pin npm for attestation verification');
@@ -376,6 +377,27 @@ describe('release generation', () => {
     expect(fallbackClassification).toBeLessThan(evidenceAssertion);
     expect(evidenceAssertion).toBeLessThan(fallbackPublish);
     expect(fallbackPublish).toBeLessThan(fallbackVerification);
+
+    const fallbackPropagationLimit = workflow.indexOf('MAX_FALLBACK_PROPAGATION_ATTEMPTS=6');
+    const fallbackPropagationLoop = workflow.indexOf(
+      'while [ "$FALLBACK_ATTEMPT" -le "$MAX_FALLBACK_PROPAGATION_ATTEMPTS" ]; do',
+    );
+    const fallbackPropagationExhaustion = workflow.indexOf(
+      'if [ "$FALLBACK_ATTEMPT" -eq "$MAX_FALLBACK_PROPAGATION_ATTEMPTS" ]; then',
+    );
+    const fallbackPropagationFailure = workflow.indexOf(
+      'npm registry propagation did not complete after $MAX_FALLBACK_PROPAGATION_ATTEMPTS fallback attempts',
+    );
+    const fallbackPropagationExit = workflow.indexOf(
+      'exit 1',
+      fallbackPropagationExhaustion,
+    );
+    expect(fallbackPublish).toBeLessThan(fallbackPropagationLimit);
+    expect(fallbackPropagationLimit).toBeLessThan(fallbackPropagationLoop);
+    expect(fallbackPropagationLoop).toBeLessThan(fallbackVerification);
+    expect(fallbackVerification).toBeLessThan(fallbackPropagationExhaustion);
+    expect(fallbackPropagationExhaustion).toBeLessThan(fallbackPropagationFailure);
+    expect(fallbackPropagationFailure).toBeLessThan(fallbackPropagationExit);
     expect(workflow).toContain(
       'workflow_dispatch:\n    inputs:\n      tag:\n        description: Exact annotated release tag to recover\n        required: true\n        type: string\n      sha:\n        description: Exact 40-character hexadecimal commit SHA to recover\n        required: true\n        type: string',
     );
@@ -386,7 +408,10 @@ describe('release generation', () => {
     );
     const recoveryJob = workflow.slice(workflow.indexOf('  recover:'));
     expect(releaseJob).toContain('if: github.event_name == \'push\'');
+    expect(releaseJob).toContain('permissions:\n      contents: write\n      id-token: write');
     expect(recoveryJob).toContain('if: github.event_name == \'workflow_dispatch\'');
+    expect(recoveryJob).toContain('permissions:\n      contents: write');
+    expect(recoveryJob).not.toContain('id-token: write');
 
     expect(recoveryJob).not.toContain('npm publish');
 
@@ -444,7 +469,10 @@ describe('release generation', () => {
     expect(propagationExit).toBeLessThan(requiredRegistryVerification);
 
     expect(recoveryJob).toContain(
-      'uses: actions/checkout@v4\n        with:\n          ref: ${{ inputs.sha }}\n          fetch-depth: 0',
+      'RECOVERY_TAG: v4.15.4\n      RECOVERY_SHA: cb6932311ac956687e3c66bb6a48d52a8df14d56\n      RECOVERY_INPUT_TAG: ${{ inputs.tag }}\n      RECOVERY_INPUT_SHA: ${{ inputs.sha }}',
+    );
+    expect(recoveryJob).toContain(
+      'uses: actions/checkout@v4\n        with:\n          ref: cb6932311ac956687e3c66bb6a48d52a8df14d56\n          fetch-depth: 0\n          persist-credentials: false',
     );
     expect(recoveryJob).toContain(
       'git fetch --no-tags --force origin "refs/tags/$RECOVERY_TAG:refs/tags/$RECOVERY_TAG"',
@@ -461,6 +489,13 @@ describe('release generation', () => {
     expect(recoveryJob).toContain('test "$(git rev-parse HEAD)" = "$RECOVERY_SHA"');
     expect(recoveryJob).toContain(
       'node scripts/release-boundary.mjs assert-trigger --tag "$RECOVERY_TAG" --sha "$RECOVERY_SHA"',
+    );
+    expect(recoveryJob).not.toContain('cache: "npm"');
+    expect(recoveryJob).not.toContain('npm ci');
+    expect(recoveryJob).not.toContain("printf 'RECOVERY_AUDIT_JSON=%s\\n'");
+    expect(recoveryJob).not.toContain('[[ "$RECOVERY_TAG" =~');
+    expect(recoveryJob).toContain(
+      '- name: Validate recovery inputs\n        run: |\n          test "$RECOVERY_INPUT_TAG" = "v4.15.4"\n          test "$RECOVERY_INPUT_SHA" = "cb6932311ac956687e3c66bb6a48d52a8df14d56"',
     );
 
     const recoveryTagFetch = recoveryJob.indexOf(
@@ -521,6 +556,26 @@ describe('release generation', () => {
     expect(recoveryInstall).toBeLessThan(recoveryAudit);
     expect(recoveryAudit).toBeLessThan(recoveryRequiredVerification);
 
+    const recoveryInputValidation = stepIndex('Validate recovery inputs');
+    const recoveryCheckout = stepIndex('Checkout recovery source');
+    const recoveryTagIdentity = stepIndex('Assert recovered tag identity');
+    const recoverySetup = stepIndex('Setup recovery Node.js');
+    const recoveryNpmPin = stepIndex('Pin npm for recovery attestation verification');
+    const recoveryTrigger = stepIndex('Assert recovery trigger');
+    expect(recoveryInputValidation).toBeLessThan(recoveryCheckout);
+    expect(recoveryCheckout).toBeLessThan(recoveryTagIdentity);
+    expect(recoveryTagIdentity).toBeLessThan(recoverySetup);
+    expect(recoverySetup).toBeLessThan(recoveryNpmPin);
+    expect(recoveryNpmPin).toBeLessThan(recoveryTrigger);
+    const recoveryStepNames = [...recoveryJob.matchAll(/- name: ([^\n]+)/g)].map(
+      (match) => match[1],
+    );
+    expect(recoveryStepNames.slice(0, 3)).toEqual([
+      'Validate recovery inputs',
+      'Checkout recovery source',
+      'Assert recovered tag identity',
+    ]);
+
     const recoveryArchive = stepIndex('Download published archive and generate recovery evidence');
     const recoveryProvenance = stepIndex('Verify recovered package provenance');
 
@@ -548,6 +603,10 @@ describe('release generation', () => {
     expect(recoveryArtifactStep).toContain(
       '${{ runner.temp }}/recovery-provenance-verification/audit-signatures.json',
     );
+    expect(recoveryArtifactStep).toContain('uses: actions/upload-artifact@v4');
+    expect(recoveryArtifactStep).toContain('name: npm-release-boundary-recovery-v4.15.4');
+    expect(recoveryArtifactStep).toContain('if-no-files-found: error');
+    expect(recoveryArtifactStep).toContain('retention-days: 30');
     expect(recoveryArtifact).toBeLessThan(recoveredRelease);
     expect(recoveryArchive).toBeLessThan(recoveryProvenance);
     expect(recoveryProvenance).toBeLessThan(recoveryArtifact);
@@ -560,7 +619,7 @@ describe('release generation', () => {
     expect(recoveryAbsence).toBeLessThan(recoveredRelease);
 
     expect(recoveredReleaseStep).toContain(
-      'uses: softprops/action-gh-release@v1\n        with:\n          tag_name: ${{ inputs.tag }}\n          body_path: release-notes.md\n          draft: false\n          prerelease: false\n        env:\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
+      'uses: softprops/action-gh-release@v1\n        with:\n          tag_name: v4.15.4\n          body_path: release-notes.md\n          draft: false\n          prerelease: false\n        env:\n          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
     );
     expect(recoveredRelease).toBeLessThan(recoveryReleaseVerification);
 
@@ -568,6 +627,42 @@ describe('release generation', () => {
       'if gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$RECOVERY_TAG" > "$RECOVERY_RELEASE_HTTP"; then',
     );
     expect(recoveryVerificationStep).toContain('case "$GH_STATUS:$HTTP_STATUS" in\n            0:200) ;;');
+    expect(recoveryVerificationStep).toContain(
+      'git fetch --no-tags --force origin "refs/tags/$RECOVERY_TAG:refs/tags/$RECOVERY_TAG"',
+    );
+    expect(recoveryVerificationStep).toContain(
+      'POST_CREATE_TAG_OBJECT=$(git rev-parse --verify "refs/tags/$RECOVERY_TAG")',
+    );
+    expect(recoveryVerificationStep).toContain(
+      'test "$(git cat-file -t "$POST_CREATE_TAG_OBJECT")" = "tag"',
+    );
+    expect(recoveryVerificationStep).toContain(
+      'POST_CREATE_TAG_SHA=$(git rev-parse --verify "refs/tags/$RECOVERY_TAG^{}")',
+    );
+    expect(recoveryVerificationStep).toContain(
+      'test "$POST_CREATE_TAG_SHA" = "$RECOVERY_SHA"',
+    );
+    const postCreateTagFetch = recoveryVerificationStep.indexOf(
+      'git fetch --no-tags --force origin "refs/tags/$RECOVERY_TAG:refs/tags/$RECOVERY_TAG"',
+    );
+    const postCreateTagObject = recoveryVerificationStep.indexOf(
+      'POST_CREATE_TAG_OBJECT=$(git rev-parse --verify "refs/tags/$RECOVERY_TAG")',
+    );
+    const postCreateTagType = recoveryVerificationStep.indexOf(
+      'test "$(git cat-file -t "$POST_CREATE_TAG_OBJECT")" = "tag"',
+    );
+    const postCreateTagSha = recoveryVerificationStep.indexOf(
+      'POST_CREATE_TAG_SHA=$(git rev-parse --verify "refs/tags/$RECOVERY_TAG^{}")',
+    );
+    const postCreateTagBinding = recoveryVerificationStep.indexOf(
+      'test "$POST_CREATE_TAG_SHA" = "$RECOVERY_SHA"',
+    );
+    const postCreateReleaseApi = recoveryVerificationStep.indexOf('gh api --include');
+    expect(postCreateTagFetch).toBeLessThan(postCreateTagObject);
+    expect(postCreateTagObject).toBeLessThan(postCreateTagType);
+    expect(postCreateTagType).toBeLessThan(postCreateTagSha);
+    expect(postCreateTagSha).toBeLessThan(postCreateTagBinding);
+    expect(postCreateTagBinding).toBeLessThan(postCreateReleaseApi);
     expect(recoveryVerificationStep).toContain(
       'const expectedBody = readFileSync(\'.github/release-body.md\', \'utf8\');',
     );
