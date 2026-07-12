@@ -153,7 +153,11 @@ describe('release generation', () => {
     expect(workflow).toContain(
       'uses: actions/checkout@v4\n        with:\n          fetch-depth: 0',
     );
+    expect(workflow).toContain('npm install --global npm@11.17.0');
+    expect(workflow).toContain('test "$(npm --version)" = "11.17.0"');
 
+    const setupNode = stepIndex('Setup Node.js');
+    const npmPin = stepIndex('Pin npm for attestation verification');
     const install = stepIndex('Install dependencies');
     const trigger = stepIndex('Assert release trigger and npm availability');
     const notes = stepIndex('Validate release notes');
@@ -168,6 +172,8 @@ describe('release generation', () => {
     const finalizedEvidence = stepIndex('Upload finalized release evidence');
     const githubRelease = stepIndex('Create GitHub Release');
 
+    expect(setupNode).toBeLessThan(npmPin);
+    expect(npmPin).toBeLessThan(install);
     expect(install).toBeLessThan(trigger);
     expect(trigger).toBeLessThan(notes);
     expect(notes).toBeLessThan(build);
@@ -182,8 +188,40 @@ describe('release generation', () => {
     expect(finalizedEvidence).toBeLessThan(githubRelease);
 
     expect(workflow).toContain(
-      'node scripts/release-boundary.mjs assert-trigger --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"',
+      'git fetch --no-tags --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"',
     );
+    expect(workflow).toContain(
+      'TAG_OBJECT=$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME")',
+    );
+    expect(workflow).toContain('test "$(git cat-file -t "$TAG_OBJECT")" = "tag"');
+    expect(workflow).toContain(
+      'RELEASE_SHA=$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{}")',
+    );
+    expect(workflow).toContain('test "$RELEASE_SHA" = "$GITHUB_SHA"');
+    expect(workflow).toContain(
+      'node scripts/release-boundary.mjs assert-trigger --tag "$GITHUB_REF_NAME" --sha "$RELEASE_SHA"',
+    );
+
+    const tagFetch = workflow.indexOf(
+      'git fetch --no-tags --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"',
+    );
+    const tagObject = workflow.indexOf(
+      'TAG_OBJECT=$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME")',
+    );
+    const tagType = workflow.indexOf('test "$(git cat-file -t "$TAG_OBJECT")" = "tag"');
+    const peeledReleaseSha = workflow.indexOf(
+      'RELEASE_SHA=$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{}")',
+    );
+    const shaBinding = workflow.indexOf('test "$RELEASE_SHA" = "$GITHUB_SHA"');
+    const triggerAssertion = workflow.indexOf(
+      'node scripts/release-boundary.mjs assert-trigger --tag "$GITHUB_REF_NAME" --sha "$RELEASE_SHA"',
+    );
+    expect(tagFetch).toBeLessThan(tagObject);
+    expect(tagObject).toBeLessThan(tagType);
+    expect(tagType).toBeLessThan(peeledReleaseSha);
+    expect(peeledReleaseSha).toBeLessThan(shaBinding);
+    expect(shaBinding).toBeLessThan(triggerAssertion);
+
     expect(workflow).toContain(
       'node scripts/release-boundary.mjs assert-npm-absent --package oh-my-claude-sisyphus --version "$VERSION"',
     );
@@ -272,14 +310,49 @@ describe('release generation', () => {
       'node scripts/release-boundary.mjs assert-evidence --tarball "$FINAL_TARBALL" --evidence "$EVIDENCE_JSON"',
     );
     expect(workflow).toContain(
-      'node scripts/release-boundary.mjs verify-registry --package oh-my-claude-sisyphus --version "$VERSION" --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --evidence "$EVIDENCE_JSON" --tarball "$FINAL_TARBALL" --provenance required',
+      'VERIFICATION_PREFIX="$RUNNER_TEMP/npm-provenance-verification"',
+    );
+    expect(workflow).toContain(
+      'AUDIT_JSON="$VERIFICATION_PREFIX/audit-signatures.json"',
+    );
+    expect(workflow).toContain(
+      'npm install --ignore-scripts --no-audit --no-fund --prefix "$VERIFICATION_PREFIX" "oh-my-claude-sisyphus@$VERSION"',
+    );
+    expect(workflow).toContain(
+      'npm audit signatures --json --include-attestations --prefix "$VERIFICATION_PREFIX" > "$AUDIT_JSON"',
+    );
+    expect(workflow).toContain(
+      'node scripts/release-boundary.mjs verify-registry --package oh-my-claude-sisyphus --version "$VERSION" --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --evidence "$EVIDENCE_JSON" --tarball "$FINAL_TARBALL" --provenance required --audit "$AUDIT_JSON"',
     );
     expect(workflow).toContain(
       'node scripts/release-boundary.mjs verify-registry --package oh-my-claude-sisyphus --version "$VERSION" --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --evidence "$EVIDENCE_JSON" --tarball "$FINAL_TARBALL" --provenance sigstore-fallback --publish-log npm-publish.log',
     );
 
+    const fallbackVerificationCommands = [
+      ...workflow.matchAll(
+        /node scripts\/release-boundary\.mjs verify-registry[^\n]*--provenance sigstore-fallback[^\n]*/g,
+      ),
+    ].map((match) => match[0]);
+    expect(fallbackVerificationCommands).toHaveLength(1);
+    expect(fallbackVerificationCommands[0]).not.toContain('--audit');
+
     const provenancePublish = workflow.indexOf(
       'npm publish "$FINAL_TARBALL" --ignore-scripts --access public --provenance',
+    );
+    const verificationPrefix = workflow.indexOf(
+      'VERIFICATION_PREFIX="$RUNNER_TEMP/npm-provenance-verification"',
+    );
+    const auditJson = workflow.indexOf(
+      'AUDIT_JSON="$VERIFICATION_PREFIX/audit-signatures.json"',
+    );
+    const verificationInstall = workflow.indexOf(
+      'npm install --ignore-scripts --no-audit --no-fund --prefix "$VERIFICATION_PREFIX" "oh-my-claude-sisyphus@$VERSION"',
+    );
+    const signatureAudit = workflow.indexOf(
+      'npm audit signatures --json --include-attestations --prefix "$VERIFICATION_PREFIX" > "$AUDIT_JSON"',
+    );
+    const requiredVerification = workflow.indexOf(
+      'node scripts/release-boundary.mjs verify-registry --package oh-my-claude-sisyphus --version "$VERSION" --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --evidence "$EVIDENCE_JSON" --tarball "$FINAL_TARBALL" --provenance required --audit "$AUDIT_JSON"',
     );
     const fallbackClassification = workflow.indexOf(
       'node scripts/release-boundary.mjs assert-sigstore-fallback',
@@ -294,7 +367,12 @@ describe('release generation', () => {
     const fallbackVerification = workflow.indexOf(
       'node scripts/release-boundary.mjs verify-registry --package oh-my-claude-sisyphus --version "$VERSION" --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --evidence "$EVIDENCE_JSON" --tarball "$FINAL_TARBALL" --provenance sigstore-fallback',
     );
-    expect(provenancePublish).toBeLessThan(fallbackClassification);
+    expect(provenancePublish).toBeLessThan(verificationPrefix);
+    expect(verificationPrefix).toBeLessThan(auditJson);
+    expect(auditJson).toBeLessThan(verificationInstall);
+    expect(verificationInstall).toBeLessThan(signatureAudit);
+    expect(signatureAudit).toBeLessThan(requiredVerification);
+    expect(requiredVerification).toBeLessThan(fallbackClassification);
     expect(fallbackClassification).toBeLessThan(evidenceAssertion);
     expect(evidenceAssertion).toBeLessThan(fallbackPublish);
     expect(fallbackPublish).toBeLessThan(fallbackVerification);
